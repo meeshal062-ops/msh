@@ -13,6 +13,60 @@ from config import Settings
 from download_report import _click_by_text
 
 
+def _debug_dump(page: Page, name: str) -> None:
+    """Save screenshot + visible text + html to output/ for GitHub artifact debugging."""
+    out = Path("output")
+    out.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
+    try:
+        page.screenshot(path=str(out / f"{safe}.png"), full_page=True)
+    except Exception as exc:
+        print(f"Could not save screenshot {safe}: {exc}")
+    try:
+        (out / f"{safe}.txt").write_text(page.locator("body").inner_text(timeout=5000), encoding="utf-8")
+    except Exception as exc:
+        print(f"Could not save text {safe}: {exc}")
+    try:
+        (out / f"{safe}.html").write_text(page.content(), encoding="utf-8")
+    except Exception as exc:
+        print(f"Could not save html {safe}: {exc}")
+
+
+def _click_text_robust(page: Page, texts: Iterable[str], timeout: int = 12000) -> None:
+    """Click by text using several strategies, including JS innerText search."""
+    last_error = None
+    for text in texts:
+        if not text:
+            continue
+        strategies = [
+            lambda t=text: page.get_by_text(t, exact=False).first.click(timeout=timeout),
+            lambda t=text: page.locator(f"text={t}").first.click(timeout=timeout),
+            lambda t=text: page.get_by_role("button", name=re.compile(re.escape(t), re.I)).first.click(timeout=3000),
+        ]
+        for action in strategies:
+            try:
+                action()
+                return
+            except Exception as exc:
+                last_error = exc
+        # Last resort: JS click first visible-ish element whose innerText contains the target text.
+        try:
+            clicked = page.evaluate(
+                """(needle) => {
+                    const els = Array.from(document.querySelectorAll('button,a,div,span,li,md-list-item,mat-list-item,*'));
+                    const el = els.find(e => (e.innerText || '').toLowerCase().includes(String(needle).toLowerCase()));
+                    if (el) { el.click(); return true; }
+                    return false;
+                }""",
+                text,
+            )
+            if clicked:
+                return
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"Could not click any of these texts: {list(texts)}. Last error: {last_error}")
+
+
 @dataclass
 class ItemMetric:
     branch_code: str
@@ -78,16 +132,56 @@ def _login_if_needed(page: Page, settings: Settings) -> None:
 
 
 def _open_key_metrics(page: Page, settings: Settings) -> None:
-    _click_by_text(page, settings.syrve_main_menu_text)
-    page.wait_for_timeout(1000)
+    """Open Routine Restaurant Operation -> Reports -> Key Metrics.
+
+    Syrve UI changes text/language and sometimes the report list is already expanded.
+    This function tries multiple visible labels and saves debug artifacts if it fails.
+    """
     try:
-        _click_by_text(page, settings.syrve_report_name, timeout=5000)
+        page.wait_for_load_state("networkidle", timeout=60000)
     except Exception:
-        _click_by_text(page, settings.syrve_reports_section_text)
-        page.wait_for_timeout(1000)
-        _click_by_text(page, settings.syrve_report_name)
-    page.wait_for_load_state("networkidle", timeout=60000)
+        pass
     page.wait_for_timeout(3000)
+    _debug_dump(page, "01_before_open_key_metrics")
+
+    # If we are already inside Store Ops / Key Metrics, do nothing.
+    try:
+        if page.get_by_text("Key Metrics", exact=False).first.is_visible(timeout=3000):
+            # It could be the menu item, but if the page title exists this is also fine.
+            pass
+    except Exception:
+        pass
+
+    try:
+        _click_text_robust(page, [
+            settings.syrve_main_menu_text,
+            "Routine Restaurant Ope",
+            "Routine Restaurant Operation",
+            "Store Ops",
+        ], timeout=15000)
+        page.wait_for_timeout(2500)
+        _debug_dump(page, "02_after_main_menu_click")
+
+        # Try the report directly first. If not visible, expand possible report sections and try again.
+        try:
+            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=7000)
+        except Exception:
+            _click_text_robust(page, [
+                settings.syrve_reports_section_text,
+                "التقارير",
+                "Reports",
+                "Reports 2.0",
+            ], timeout=12000)
+            page.wait_for_timeout(1500)
+            _debug_dump(page, "03_after_reports_expand")
+            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=15000)
+
+        page.wait_for_load_state("networkidle", timeout=60000)
+        page.wait_for_timeout(5000)
+        _debug_dump(page, "04_key_metrics_opened")
+    except Exception:
+        _debug_dump(page, "open_key_metrics_failed")
+        raise
 
 
 def _apply_report_date(page: Page, settings: Settings) -> str:
