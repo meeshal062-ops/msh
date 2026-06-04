@@ -162,10 +162,18 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
         page.wait_for_timeout(2500)
         _debug_dump(page, "02_after_main_menu_click")
 
-        # Try the report directly first. If not visible, expand possible report sections and try again.
+        # Try the report directly first. In some Syrve accounts the dashboard URL already opens
+        # the Key Metrics dashboard and there is no separate "Key Metrics" menu item.
         try:
             _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=7000)
-        except Exception:
+            page.wait_for_load_state("networkidle", timeout=60000)
+            page.wait_for_timeout(5000)
+            _debug_dump(page, "04_key_metrics_opened_from_menu")
+            return
+        except Exception as first_exc:
+            print(f"Key Metrics menu item was not visible; trying report sections. Details: {first_exc}")
+
+        try:
             _click_text_robust(page, [
                 settings.syrve_reports_section_text,
                 "التقارير",
@@ -174,11 +182,23 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
             ], timeout=12000)
             page.wait_for_timeout(1500)
             _debug_dump(page, "03_after_reports_expand")
-            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=15000)
-
-        page.wait_for_load_state("networkidle", timeout=60000)
-        page.wait_for_timeout(5000)
-        _debug_dump(page, "04_key_metrics_opened")
+            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=7000)
+            page.wait_for_load_state("networkidle", timeout=60000)
+            page.wait_for_timeout(5000)
+            _debug_dump(page, "04_key_metrics_opened_from_reports")
+            return
+        except Exception as second_exc:
+            # Do NOT fail here. The supplied URL is already a dashboard URL (/dashboard/174327).
+            # The artifact showed that the account menu does not contain Key Metrics, so we continue
+            # with the currently opened dashboard and scrape whatever is visible after branch selection.
+            print(f"Could not open Key Metrics from menu; continuing with current dashboard URL. Details: {second_exc}")
+            try:
+                page.goto(settings.syrve_url, wait_until="networkidle")
+            except Exception:
+                pass
+            page.wait_for_timeout(5000)
+            _debug_dump(page, "04_using_current_dashboard")
+            return
     except Exception:
         _debug_dump(page, "open_key_metrics_failed")
         raise
