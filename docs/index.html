@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>تشغيل تقرير Syrve</title>
+  <style>
+    body{font-family:Arial,Tahoma,sans-serif;background:#f6f7fb;margin:0;color:#1f2937}
+    .wrap{max-width:760px;margin:70px auto;padding:24px}
+    .card{background:#fff;border-radius:18px;box-shadow:0 10px 30px #0001;padding:34px;text-align:center}
+    h1{margin:0 0 12px;font-size:32px}.muted{color:#6b7280;line-height:1.8}
+    .btn{display:inline-block;margin-top:24px;background:#2563eb;color:white;text-decoration:none;padding:16px 28px;border-radius:12px;font-size:20px;font-weight:bold}
+    .btn:hover{background:#1d4ed8}.note{margin-top:24px;background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:14px;color:#9a3412;text-align:right;line-height:1.8}
+    code{direction:ltr;display:inline-block;background:#f3f4f6;padding:2px 6px;border-radius:6px}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <h1>تشغيل تقرير Syrve</h1>
+      <p class="muted">اضغط الزر التالي لفتح صفحة تشغيل التقرير في GitHub Actions، ثم اضغط <b>Run workflow</b>.</p>
+      <a id="runLink" class="btn" href="#" target="_blank" rel="noopener">تشغيل التقرير الآن</a>
+      <div class="note">
+        <b>مهم:</b> لأسباب أمنية لا يمكن لصفحة GitHub Pages تشغيل التقرير مباشرة بدون صلاحية GitHub.
+        هذا الزر يفتح صفحة التشغيل الآمنة داخل GitHub. إذا أردت تشغيلًا بضغطة واحدة فعلية من هذه الصفحة، نحتاج وسيط آمن مثل Cloudflare Worker أو سيرفر صغير يحفظ التوكن بعيدًا عن المتصفح.
+      </div>
+      <p class="muted">إذا لم يعمل الزر، عدّل رابط المستودع داخل ملف <code>docs/index.html</code>.</p>
+    </section>
+  </main>
+  <script>
+    // غيّر هذا الرابط بعد إنشاء مستودع GitHub الخاص بك.
+    const REPO_URL = "https://github.com/meeshal062-ops/msh";
+    document.getElementById("runLink").href = REPO_URL + "/actions/workflows/daily-report.yml";
+  </script>
+</body>
+</html>

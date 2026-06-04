@@ -1,0 +1,57 @@
+name: Syrve Key Metrics Report
+
+on:
+  # Manual run only. Open Actions -> Syrve Key Metrics Report -> Run workflow.
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run report automation
+        env:
+          SYRVE_URL: ${{ secrets.SYRVE_URL }}
+          SYRVE_USERNAME: ${{ secrets.SYRVE_USERNAME }}
+          SYRVE_PASSWORD: ${{ secrets.SYRVE_PASSWORD }}
+          SYRVE_MAIN_MENU_TEXT: ${{ secrets.SYRVE_MAIN_MENU_TEXT }}
+          SYRVE_REPORTS_SECTION_TEXT: ${{ secrets.SYRVE_REPORTS_SECTION_TEXT }}
+          SYRVE_REPORT_NAME: ${{ secrets.SYRVE_REPORT_NAME }}
+          BRANCH_CODES: ${{ secrets.BRANCH_CODES }}
+          REPORT_DATE_MODE: ${{ secrets.REPORT_DATE_MODE }}
+
+          WHATSAPP_ENABLED: ${{ secrets.WHATSAPP_ENABLED }}
+          WATS_API_URL: ${{ secrets.WATS_API_URL }}
+          WATS_API_TOKEN: ${{ secrets.WATS_API_TOKEN }}
+          WATS_TO: ${{ secrets.WATS_TO }}
+
+          EMAIL_ENABLED: ${{ secrets.EMAIL_ENABLED }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python src/main.py
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: syrve-report-output
+          path: output/
+          if-no-files-found: ignore
