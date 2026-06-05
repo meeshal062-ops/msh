@@ -648,9 +648,22 @@ def scrape_key_metrics(settings: Settings, output_dir: Path) -> tuple[Path, str,
             text = _get_page_text_after_scroll(page)
             raw_text_path = output_dir / f"raw_text_{branch_code}.txt"
             raw_text_path.write_text(text, encoding="utf-8")
-            results.append(_extract_metrics(text, branch_code, raw_text_path))
+            metrics = _extract_metrics(text, branch_code, raw_text_path)
             print(f"{branch_code}: extracting top items...", flush=True)
-            all_items.extend(_extract_top_items_by_qty_from_svg(page, branch_code))
+            branch_items = _extract_top_items_by_qty_from_svg(page, branch_code)
+
+            # Fail fast instead of sending misleading dashes. This means the dashboard widgets did not load
+            # or we are not on the real Key Metrics page.
+            if not any([metrics.sales, metrics.net_revenue, metrics.bills, metrics.average_spend, metrics.vat, metrics.discount]) and not branch_items:
+                _debug_dump(page, f"{branch_code}_no_metrics_extracted")
+                raise RuntimeError(
+                    f"No Key Metrics values were extracted for {branch_code}. "
+                    "The page visible to automation does not contain sales widgets. "
+                    "Use the exact URL of the Key Metrics page after it shows numbers, or switch to Reports 2.0/Sales by Product as the data source."
+                )
+
+            results.append(metrics)
+            all_items.extend(branch_items)
             print(f"{branch_code}: done.", flush=True)
 
         context.close()
