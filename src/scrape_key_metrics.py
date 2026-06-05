@@ -153,6 +153,77 @@ def _value_after_label(text: str, labels: Iterable[str]) -> str:
     return ""
 
 
+def _refresh_and_wait_for_dashboard(page: Page, branch_code: str) -> None:
+    """Refresh dashboard widgets and wait until Key Metrics labels appear.
+
+    Syrve often opens /dashboard/174327 with a blank canvas until the blue sync button is clicked
+    or until widgets finish loading. Reading too early produces only menu text, hence dashes.
+    """
+    print(f"{branch_code}: refreshing dashboard widgets...", flush=True)
+    try:
+        # Make sure we are on the Key Metrics dashboard URL after changing stores.
+        page.goto(page.url if "dashboard/174327" in page.url else "https://half-million-co.syrve.app/dashboard/index.html#/dashboard/174327", wait_until="domcontentloaded", timeout=20000)
+        page.wait_for_timeout(2500)
+    except Exception as exc:
+        print(f"{branch_code}: dashboard goto skipped/failed: {exc}", flush=True)
+
+    # Close store drawer if it is still open.
+    for _ in range(2):
+        try:
+            txt = page.locator("body").inner_text(timeout=1500)
+        except Exception:
+            txt = ""
+        if "Store" in txt and "CLOSE" in txt:
+            try:
+                page.get_by_text("CLOSE", exact=True).first.click(timeout=2000)
+            except Exception:
+                try:
+                    page.keyboard.press("Escape")
+                except Exception:
+                    pass
+            page.wait_for_timeout(2000)
+        else:
+            break
+
+    # Click the blue sync/refresh button if available. It usually renders as material icon 'sync'.
+    clicked_refresh = False
+    for locator in [
+        page.get_by_text("sync", exact=True),
+        page.locator("mat-icon:has-text('sync')"),
+        page.locator("button:has-text('sync')"),
+    ]:
+        try:
+            locator.first.click(timeout=3000, force=True)
+            clicked_refresh = True
+            break
+        except Exception:
+            continue
+    if not clicked_refresh:
+        # Coordinate fallback: blue refresh button on top-right of content.
+        try:
+            page.mouse.click(1840, 105)
+            clicked_refresh = True
+        except Exception:
+            pass
+    print(f"{branch_code}: refresh clicked={clicked_refresh}", flush=True)
+
+    # Wait until the dashboard contains one of the real KPI/chart labels.
+    labels = ["المبيعات", "صافي الإيرادات", "BILLS", "Top 10 items", "Sales vs Forecast", "By Number Sold"]
+    try:
+        page.wait_for_function(
+            """(labels) => {
+                const t = document.body.innerText || '';
+                return labels.some(l => t.includes(l));
+            }""",
+            labels,
+            timeout=45000,
+        )
+        print(f"{branch_code}: dashboard widgets detected.", flush=True)
+    except Exception as exc:
+        print(f"{branch_code}: dashboard widgets were not detected in time: {exc}", flush=True)
+        _debug_dump(page, f"{branch_code}_dashboard_no_widgets")
+
+
 def _get_page_text_after_scroll(page: Page) -> str:
     """Scroll down so lazy-loaded widgets/charts render, then return page text."""
     page.evaluate("window.scrollTo(0, 0)")
@@ -452,7 +523,9 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
             body_after = page.locator("body").inner_text(timeout=3000)
         except Exception:
             body_after = ""
-        print(f"{branch_code}: header/body starts with: {body_after[:180]!r}", flush=True)
+        print(f"{branch_code}: header/body starts with: {body_after[:220]!r}", flush=True)
+        if "2 of 131" in body_after or "3 of 131" in body_after or "4 of 131" in body_after or "5 of 131" in body_after:
+            print(f"{branch_code}: WARNING multiple stores still selected. Dashboard may aggregate/blank.", flush=True)
         print(f"{branch_code}: selected; saving quick debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_selected")
         print(f"{branch_code}: branch step finished.", flush=True)
@@ -570,6 +643,7 @@ def scrape_key_metrics(settings: Settings, output_dir: Path) -> tuple[Path, str,
             # while the default branch may expose only Reports 2.0.
             _select_branch(page, branch_code, branch_codes)
             _open_key_metrics(page, settings)
+            _refresh_and_wait_for_dashboard(page, branch_code)
             print(f"{branch_code}: scraping visible dashboard text...", flush=True)
             text = _get_page_text_after_scroll(page)
             raw_text_path = output_dir / f"raw_text_{branch_code}.txt"
