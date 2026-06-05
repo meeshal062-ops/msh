@@ -43,6 +43,7 @@ jobs:
           WATS_TO: ${{ secrets.WATS_TO }}
 
           EMAIL_ENABLED: ${{ secrets.EMAIL_ENABLED }}
+          EMAIL_FALLBACK_ENABLED: ${{ secrets.EMAIL_FALLBACK_ENABLED }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}

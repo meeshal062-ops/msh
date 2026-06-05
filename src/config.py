@@ -26,8 +26,11 @@ class Settings:
     branch_codes: str = _get("BRANCH_CODES", "B60,B63,B45,B26,B105")
     report_date_mode: str = _get("REPORT_DATE_MODE", "yesterday")  # today or yesterday
 
-    # Email is optional. If EMAIL_ENABLED=true, SMTP fields become required.
+    # Email is optional.
+    # EMAIL_ENABLED=true sends email every successful run.
+    # EMAIL_FALLBACK_ENABLED=true sends email only if WhatsApp delivery fails.
     email_enabled: bool = _bool("EMAIL_ENABLED", "false")
+    email_fallback_enabled: bool = _bool("EMAIL_FALLBACK_ENABLED", "false")
     smtp_host: str = _get("SMTP_HOST")
     smtp_port: int = int(_get("SMTP_PORT", "587") or "587")
     smtp_username: str = _get("SMTP_USERNAME")
@@ -54,7 +57,7 @@ def validate(settings: Settings) -> None:
             if not getattr(settings, key):
                 missing.append(key.upper())
 
-    if settings.email_enabled:
+    if settings.email_enabled or settings.email_fallback_enabled:
         for key in ["smtp_host", "smtp_username", "smtp_password", "email_from", "email_to"]:
             if not getattr(settings, key):
                 missing.append(key.upper())
