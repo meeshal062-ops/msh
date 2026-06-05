@@ -1,7 +1,10 @@
 name: Syrve Key Metrics Report
 
 on:
-  # Manual run only. Open Actions -> Syrve Key Metrics Report -> Run workflow.
+  # Daily automatic run: 10:00 AM Asia/Riyadh = 07:00 UTC
+  schedule:
+    - cron: "0 7 * * *"
+  # Manual run is still available from Actions -> Syrve Key Metrics Report -> Run workflow.
   workflow_dispatch:
 
 jobs:
