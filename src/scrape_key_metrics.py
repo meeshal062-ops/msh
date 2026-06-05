@@ -19,11 +19,11 @@ def _debug_dump(page: Page, name: str) -> None:
     out.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
     try:
-        page.screenshot(path=str(out / f"{safe}.png"), full_page=True)
+        page.screenshot(path=str(out / f"{safe}.png"), full_page=False, timeout=5000)
     except Exception as exc:
         print(f"Could not save screenshot {safe}: {exc}")
     try:
-        (out / f"{safe}.txt").write_text(page.locator("body").inner_text(timeout=5000), encoding="utf-8")
+        (out / f"{safe}.txt").write_text(page.locator("body").inner_text(timeout=3000), encoding="utf-8")
     except Exception as exc:
         print(f"Could not save text {safe}: {exc}")
     try:
@@ -258,97 +258,106 @@ def _apply_report_date(page: Page, settings: Settings) -> str:
     return target_date.strftime("%Y-%m-%d")
 
 def _select_branch(page: Page, branch_code: str) -> None:
-    """Select branch by code from the Select location page."""
+    """Select branch by code from the Select location page.
+
+    This version uses coordinate/JS fallbacks because Syrve keeps hidden search inputs in the DOM,
+    and locator.fill can wait forever on a hidden input.
+    """
     if not branch_code:
         return
     branch_code = branch_code.upper().strip()
-    print(f"Selecting branch {branch_code}...")
+    print(f"Selecting branch {branch_code}...", flush=True)
     try:
+        print(f"{branch_code}: saving before-click debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_before_click")
 
-        # Click the current location in the top bar. Prefer a visible B-code in the header.
-        clicked = False
-        for locator in [
-            page.locator("text=/B\\d+/i").first,
-            page.get_by_text(re.compile(r"B\d+", re.I)).first,
-        ]:
-            try:
-                locator.click(timeout=8000)
-                clicked = True
-                break
-            except Exception:
-                pass
-        if not clicked:
-            # Coordinate fallback: top branch selector area.
-            page.mouse.click(560, 35)
-
-        page.wait_for_timeout(2000)
-        _debug_dump(page, f"branch_{branch_code}_select_location_opened")
-
-        # Use only visible search inputs; hidden inputs with placeholder Search exist in the DOM.
-        search = None
-        for selector in [
-            "input[placeholder='Search']:visible",
-            "input[placeholder='بحث']:visible",
-            "input:visible",
-        ]:
-            loc = page.locator(selector).first
-            try:
-                loc.wait_for(state="visible", timeout=5000)
-                search = loc
-                break
-            except Exception:
-                continue
-
-        if search is not None:
-            search.click(timeout=5000)
-            search.fill(branch_code, timeout=5000)
-        else:
-            # JS fallback: set first visible input value and dispatch events.
-            ok = page.evaluate(
-                """(code) => {
-                    const inputs = Array.from(document.querySelectorAll('input'));
-                    const input = inputs.find(i => {
-                      const r = i.getBoundingClientRect();
-                      const style = window.getComputedStyle(i);
-                      return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                    });
-                    if (!input) return false;
-                    input.focus();
-                    input.value = code;
-                    input.dispatchEvent(new Event('input', {bubbles:true}));
-                    input.dispatchEvent(new Event('change', {bubbles:true}));
-                    return true;
-                }""",
-                branch_code,
-            )
-            if not ok:
-                raise RuntimeError("Could not find a visible branch search input")
-
-        page.wait_for_timeout(1500)
-        _debug_dump(page, f"branch_{branch_code}_after_search")
-
-        # Click the matching branch row/arrow.
+        print(f"{branch_code}: opening location selector...", flush=True)
+        # Most reliable: click the top-left location selector area in the header.
+        # In the GitHub runner viewport, the branch selector is around x=520,y=35.
         try:
-            page.get_by_text(re.compile(rf"\b{re.escape(branch_code)}\b", re.I)).first.click(timeout=10000)
+            page.mouse.click(560, 35)
         except Exception:
+            pass
+        page.wait_for_timeout(2500)
+
+        # If coordinate click did not open Select location, try clicking visible location text.
+        try:
+            body_text = page.locator("body").inner_text(timeout=3000)
+        except Exception:
+            body_text = ""
+        if "Select location" not in body_text and "بحث" not in body_text and "Search" not in body_text:
+            print(f"{branch_code}: coordinate click did not open selector; trying text click...", flush=True)
             clicked = page.evaluate(
-                """(code) => {
-                    const c = String(code).toLowerCase();
-                    const els = Array.from(document.querySelectorAll('button,a,div,span,li,*'));
-                    const row = els.find(e => (e.innerText || '').toLowerCase().includes(c));
-                    if (row) { row.click(); return true; }
+                """() => {
+                    const els = Array.from(document.querySelectorAll('button,a,div,span,*'));
+                    const el = els.find(e => /B\d+|\d+\s+of\s+\d+|من/.test(e.innerText || ''));
+                    if (el) { el.click(); return true; }
                     return false;
-                }""",
-                branch_code,
+                }"""
             )
             if not clicked:
-                raise
+                page.mouse.click(520, 35)
+            page.wait_for_timeout(2500)
 
-        page.wait_for_load_state("networkidle", timeout=60000)
-        page.wait_for_timeout(4000)
+        print(f"{branch_code}: location selector should be open; saving debug...", flush=True)
+        _debug_dump(page, f"branch_{branch_code}_select_location_opened")
+
+        print(f"{branch_code}: filling search...", flush=True)
+        ok = page.evaluate(
+            """(code) => {
+                const inputs = Array.from(document.querySelectorAll('input'));
+                const visible = inputs.filter(i => {
+                  const r = i.getBoundingClientRect();
+                  const style = window.getComputedStyle(i);
+                  return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && !i.disabled && !i.readOnly;
+                });
+                const input = visible[0];
+                if (!input) return {ok:false, count: inputs.length, visible: visible.length};
+                input.focus();
+                input.value = '';
+                input.dispatchEvent(new Event('input', {bubbles:true}));
+                input.value = code;
+                input.dispatchEvent(new Event('input', {bubbles:true}));
+                input.dispatchEvent(new Event('change', {bubbles:true}));
+                return {ok:true, count: inputs.length, visible: visible.length};
+            }""",
+            branch_code,
+        )
+        print(f"{branch_code}: search JS result: {ok}", flush=True)
+        if not ok or not ok.get("ok"):
+            raise RuntimeError(f"Could not find visible search input. Result={ok}")
+        page.wait_for_timeout(2000)
+        _debug_dump(page, f"branch_{branch_code}_after_search")
+
+        print(f"{branch_code}: clicking result row...", flush=True)
+        clicked = page.evaluate(
+            """(code) => {
+                const c = String(code).toLowerCase();
+                const els = Array.from(document.querySelectorAll('button,a,div,span,li,*'));
+                // Prefer row-like elements that contain the branch code.
+                let candidates = els.filter(e => (e.innerText || '').toLowerCase().includes(c));
+                candidates = candidates.filter(e => {
+                  const r = e.getBoundingClientRect();
+                  const style = window.getComputedStyle(e);
+                  return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                });
+                const el = candidates[0];
+                if (!el) return {ok:false, count:0};
+                el.click();
+                return {ok:true, count:candidates.length, text:(el.innerText || '').slice(0,80)};
+            }""",
+            branch_code,
+        )
+        print(f"{branch_code}: click result: {clicked}", flush=True)
+        if not clicked or not clicked.get("ok"):
+            raise RuntimeError(f"Could not click branch result. Result={clicked}")
+
+        # Do not wait for strict networkidle; Angular apps often keep requests open.
+        page.wait_for_timeout(6000)
+        print(f"{branch_code}: selected; saving debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_selected")
     except Exception:
+        print(f"{branch_code}: branch selection failed; saving failure debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_failed")
         raise
 
@@ -451,7 +460,7 @@ def scrape_key_metrics(settings: Settings, output_dir: Path) -> tuple[Path, str,
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(locale="ar-SA", viewport={"width": 1920, "height": 1080})
         page = context.new_page()
-        page.set_default_timeout(30000)
+        page.set_default_timeout(12000)
 
         _login_if_needed(page, settings)
         report_date = _apply_report_date(page, settings)
