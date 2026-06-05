@@ -265,74 +265,26 @@ def _apply_report_date(page: Page, settings: Settings) -> str:
         target_date = target_date - timedelta(days=1)
     return target_date.strftime("%Y-%m-%d")
 
-def _select_branch(page: Page, branch_code: str) -> None:
-    """Select branch by code from the Select location page.
+def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | None = None) -> None:
+    """Select exactly one store/branch in Syrve's multi-select Store drawer.
 
-    This version uses coordinate/JS fallbacks because Syrve keeps hidden search inputs in the DOM,
-    and locator.fill can wait forever on a hidden input.
+    Syrve's store picker is not a single-select dropdown; it is a checkbox drawer.
+    If we only tick B60 while B111 is already ticked, the dashboard becomes "2 of 131"
+    and the report is aggregated/empty for our purpose. Therefore we clear known selected
+    stores first, tick the requested branch, then press CLOSE.
     """
     if not branch_code:
         return
     branch_code = branch_code.upper().strip()
+    all_branch_codes = [c.upper().strip() for c in (all_branch_codes or []) if c.strip()]
+    clear_codes = []
+    for c in ["B111", *all_branch_codes, branch_code]:
+        if c and c not in clear_codes:
+            clear_codes.append(c)
+
     print(f"Selecting branch {branch_code}...", flush=True)
-    try:
-        print(f"{branch_code}: saving before-click debug...", flush=True)
-        _debug_dump(page, f"branch_{branch_code}_before_click")
 
-        print(f"{branch_code}: opening location selector...", flush=True)
-        opened = False
-        # Best selector from Syrve HTML: <resto-store-selector><div class="store-picker">...
-        for selector in [
-            "resto-store-selector .store-picker",
-            ".store-picker",
-            "resto-store-selector",
-            ".store-name",
-        ]:
-            try:
-                page.locator(selector).first.click(timeout=4000, force=True)
-                page.wait_for_timeout(2500)
-                body_text = page.locator("body").inner_text(timeout=3000)
-                if "Select location" in body_text or "Al Khobar WH" in body_text or "B01 RIY" in body_text or "بحث" in body_text:
-                    opened = True
-                    print(f"{branch_code}: opened selector using {selector}", flush=True)
-                    break
-            except Exception as exc:
-                print(f"{branch_code}: selector {selector} did not open location page: {exc}", flush=True)
-
-        if not opened:
-            print(f"{branch_code}: CSS click did not open selector; trying branch-label center click...", flush=True)
-            rect = page.evaluate(
-                """() => {
-                    const els = Array.from(document.querySelectorAll('button,a,div,span,*'));
-                    const candidates = els
-                      .filter(e => /B\d+/.test(e.innerText || ''))
-                      .map(e => {
-                        const r = e.getBoundingClientRect();
-                        const style = window.getComputedStyle(e);
-                        return {x:r.x, y:r.y, w:r.width, h:r.height, text:(e.innerText||'').slice(0,80), visible:r.width>0 && r.height>0 && style.display!=='none' && style.visibility!=='hidden'};
-                      })
-                      .filter(r => r.visible && r.y < 90 && r.x > 180 && r.x < 700)
-                      .sort((a,b) => (a.w*a.h) - (b.w*b.h));
-                    return candidates[0] || null;
-                }"""
-            )
-            print(f"{branch_code}: branch label rect: {rect}", flush=True)
-            if rect:
-                page.mouse.click(rect["x"] + rect["w"] / 2, rect["y"] + rect["h"] / 2)
-            else:
-                page.mouse.click(300, 34)
-            page.wait_for_timeout(2500)
-
-        print(f"{branch_code}: location selector should be open; saving debug...", flush=True)
-        _debug_dump(page, f"branch_{branch_code}_select_location_opened")
-        try:
-            opened_text = page.locator("body").inner_text(timeout=3000)
-        except Exception:
-            opened_text = ""
-        if "Select location" not in opened_text and "Al Khobar WH" not in opened_text and "B01 RIY" not in opened_text and "بحث" not in opened_text:
-            raise RuntimeError("Location selector did not open; cannot choose branch")
-
-        print(f"{branch_code}: filling search...", flush=True)
+    def search_store(code: str) -> None:
         ok = page.evaluate(
             """(code) => {
                 const inputs = Array.from(document.querySelectorAll('input'));
@@ -351,86 +303,129 @@ def _select_branch(page: Page, branch_code: str) -> None:
                 input.dispatchEvent(new Event('change', {bubbles:true}));
                 return {ok:true, count: inputs.length, visible: visible.length};
             }""",
-            branch_code,
+            code,
         )
-        print(f"{branch_code}: search JS result: {ok}", flush=True)
+        print(f"{branch_code}: search {code} result: {ok}", flush=True)
         if not ok or not ok.get("ok"):
-            raise RuntimeError(f"Could not find visible search input. Result={ok}")
-        page.wait_for_timeout(2000)
-        _debug_dump(page, f"branch_{branch_code}_after_search")
+            raise RuntimeError(f"Could not search store {code}. Result={ok}")
+        page.wait_for_timeout(900)
 
-        print(f"{branch_code}: clicking result row...", flush=True)
-        clicked = page.evaluate(
-            """(code) => {
+    def set_checkbox(code: str, desired: bool) -> dict:
+        # Scroll row into view, inspect checkbox state, click only if a change is needed.
+        result = page.evaluate(
+            """({code, desired}) => {
                 const c = String(code).toLowerCase();
-                const els = Array.from(document.querySelectorAll('button,a,div,span,li,section'));
-                let candidates = els.map(e => {
+                const all = Array.from(document.querySelectorAll('div,li,section,mat-checkbox,label,span'));
+                let rows = all.map(e => {
                   const text = (e.innerText || '').trim();
                   const r = e.getBoundingClientRect();
                   const style = window.getComputedStyle(e);
                   const visible = r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                  return {e, text, x:r.x, y:r.y, w:r.width, h:r.height, area:r.width*r.height, visible};
+                  return {e, text, r, area:r.width*r.height, visible};
                 }).filter(o =>
-                  o.visible &&
-                  o.text.toLowerCase().includes(c) &&
-                  o.area > 20 && o.area < 90000 &&
-                  o.h >= 10 && o.h <= 90 &&
-                  o.w >= 20
+                  o.visible && o.text.toLowerCase().includes(c) &&
+                  o.area > 100 && o.area < 120000 && o.r.height >= 18 && o.r.height <= 90
                 );
-                candidates.sort((a,b) => {
-                  const ae = a.text.toLowerCase().startsWith(c) ? 0 : 1;
-                  const be = b.text.toLowerCase().startsWith(c) ? 0 : 1;
-                  if (ae !== be) return ae - be;
-                  return a.area - b.area;
+                rows.sort((a,b) => {
+                  const as = a.text.toLowerCase().startsWith(c) ? 0 : 1;
+                  const bs = b.text.toLowerCase().startsWith(c) ? 0 : 1;
+                  if (as !== bs) return as - bs;
+                  return b.r.width - a.r.width; // prefer full row over text span
                 });
-                const target = candidates[0];
-                if (!target) return {ok:false, count:0, sample:[]};
+                const row = rows[0];
+                if (!row) return {found:false, changed:false, reason:'row_not_found'};
+                row.e.scrollIntoView({block:'center', inline:'center'});
 
-                // Scroll the exact target into the visible area first. Returning an off-screen rect
-                // such as y=4003 means Playwright/Angular may not really select it.
-                target.e.scrollIntoView({block:'center', inline:'center'});
-                const rr = target.e.getBoundingClientRect();
-                return {
-                  ok:true,
-                  count:candidates.length,
-                  picked:{text:target.text.slice(0,120), x:rr.x, y:rr.y, w:rr.width, h:rr.height, area:rr.width*rr.height},
-                  sample:candidates.slice(0,5).map(o => ({text:o.text.slice(0,80), x:o.x, y:o.y, w:o.w, h:o.h, area:o.area}))
-                };
+                // Recompute after scroll.
+                const rr = row.e.getBoundingClientRect();
+                let container = row.e;
+                for (let i=0; i<4 && container && !container.querySelector('input[type="checkbox"], [role="checkbox"], mat-checkbox'); i++) {
+                  container = container.parentElement;
+                }
+                if (!container) container = row.e;
+                let checkbox = container.querySelector('input[type="checkbox"], [role="checkbox"], mat-checkbox');
+                if (!checkbox) {
+                  // Try nearest checkbox horizontally in the same row.
+                  const boxes = Array.from(document.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox'))
+                    .map(e => ({e, r:e.getBoundingClientRect()}))
+                    .filter(o => Math.abs((o.r.y + o.r.height/2) - (rr.y + rr.height/2)) < 30 && o.r.width > 0 && o.r.height > 0)
+                    .sort((a,b) => a.r.x - b.r.x);
+                  if (boxes[0]) checkbox = boxes[0].e;
+                }
+                if (!checkbox) return {found:true, changed:false, reason:'checkbox_not_found', text:row.text.slice(0,100)};
+
+                let checked = false;
+                if ('checked' in checkbox) checked = !!checkbox.checked;
+                else if (checkbox.getAttribute('aria-checked') != null) checked = checkbox.getAttribute('aria-checked') === 'true';
+                else checked = /checked|selected/.test(checkbox.className || '') || !!checkbox.querySelector('.mat-mdc-checkbox-checked,.mdc-checkbox--selected,input:checked');
+
+                if (checked !== desired) {
+                  checkbox.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, view:window}));
+                  checkbox.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, view:window}));
+                  checkbox.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, view:window}));
+                  checkbox.dispatchEvent(new MouseEvent('click', {bubbles:true, view:window}));
+                  return {found:true, changed:true, wasChecked:checked, desired, text:row.text.slice(0,100), x:rr.x, y:rr.y};
+                }
+                return {found:true, changed:false, wasChecked:checked, desired, text:row.text.slice(0,100), x:rr.x, y:rr.y};
             }""",
-            branch_code,
+            {"code": code, "desired": desired},
         )
-        print(f"{branch_code}: click result: {clicked}", flush=True)
-        if not clicked or not clicked.get("ok"):
-            raise RuntimeError(f"Could not find branch result. Result={clicked}")
+        print(f"{branch_code}: set {code} -> {desired}: {result}", flush=True)
+        page.wait_for_timeout(700)
+        return result
 
-        # Real mouse click after scrollIntoView. Click near the row text, then near the row arrow/right side.
-        picked = clicked.get("picked") or {}
-        x = float(picked.get("x", 0)); y = float(picked.get("y", 0)); w = float(picked.get("w", 0)); h = float(picked.get("h", 0))
-        if w > 0 and h > 0:
-            page.mouse.click(x + min(w / 2, 120), y + h / 2)
-            page.wait_for_timeout(1500)
-            # If still on the selector page, click the right side of the same row (where Syrve shows the arrow).
+    try:
+        print(f"{branch_code}: saving before-click debug...", flush=True)
+        _debug_dump(page, f"branch_{branch_code}_before_click")
+
+        print(f"{branch_code}: opening location selector...", flush=True)
+        opened = False
+        for selector in ["resto-store-selector .store-picker", ".store-picker", "resto-store-selector", ".store-name"]:
             try:
-                temp_text = page.locator("body").inner_text(timeout=1500)
-            except Exception:
-                temp_text = ""
-            if "Select location" in temp_text or "Search" in temp_text or "بحث" in temp_text:
-                page.mouse.click(min(x + max(w + 35, 250), 1850), y + h / 2)
+                page.locator(selector).first.click(timeout=4000, force=True)
+                page.wait_for_timeout(1800)
+                body_text = page.locator("body").inner_text(timeout=3000)
+                if "Store" in body_text and ("CLOSE" in body_text or "B60" in body_text or "B01" in body_text):
+                    opened = True
+                    print(f"{branch_code}: opened selector using {selector}", flush=True)
+                    break
+            except Exception as exc:
+                print(f"{branch_code}: selector {selector} did not open location page: {exc}", flush=True)
+        if not opened:
+            raise RuntimeError("Location selector did not open; cannot choose branch")
 
-        # Do not wait for strict networkidle; Angular apps often keep requests open.
-        page.wait_for_timeout(5000)
-        # Verify whether the header changed to the requested branch. If not, try pressing Enter as fallback.
+        _debug_dump(page, f"branch_{branch_code}_select_location_opened")
+
+        # Clear known stores first, then tick the requested one.
+        for code in clear_codes:
+            search_store(code)
+            set_checkbox(code, False)
+        search_store(branch_code)
+        selected = set_checkbox(branch_code, True)
+        if not selected.get("found"):
+            raise RuntimeError(f"Could not find requested branch {branch_code}")
+
+        _debug_dump(page, f"branch_{branch_code}_after_checkbox")
+
+        print(f"{branch_code}: closing store selector...", flush=True)
+        closed = False
+        for locator in [page.get_by_text("CLOSE", exact=True), page.get_by_text("Close", exact=True), page.locator("button:has-text('CLOSE')")]:
+            try:
+                locator.first.click(timeout=4000)
+                closed = True
+                break
+            except Exception:
+                continue
+        if not closed:
+            # Bottom-left of drawer close button in screenshot.
+            page.mouse.click(1535, 1040)
+        page.wait_for_timeout(6000)
+
         try:
-            after_text = page.locator("body").inner_text(timeout=3000)
+            body_after = page.locator("body").inner_text(timeout=3000)
         except Exception:
-            after_text = ""
-        if branch_code not in after_text[:500]:
-            print(f"{branch_code}: branch not clearly selected yet; pressing Enter fallback...", flush=True)
-            try:
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(4000)
-            except Exception:
-                pass
+            body_after = ""
+        print(f"{branch_code}: header/body starts with: {body_after[:180]!r}", flush=True)
         print(f"{branch_code}: selected; saving quick debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_selected")
         print(f"{branch_code}: branch step finished.", flush=True)
@@ -546,7 +541,7 @@ def scrape_key_metrics(settings: Settings, output_dir: Path) -> tuple[Path, str,
         for branch_code in branch_codes:
             # Select the branch first. Some branches expose the legacy Reports -> Key Metrics menu,
             # while the default branch may expose only Reports 2.0.
-            _select_branch(page, branch_code)
+            _select_branch(page, branch_code, branch_codes)
             _open_key_metrics(page, settings)
             print(f"{branch_code}: scraping visible dashboard text...", flush=True)
             text = _get_page_text_after_scroll(page)
