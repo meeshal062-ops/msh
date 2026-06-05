@@ -3,7 +3,7 @@ import functools, builtins
 from datetime import datetime
 
 from config import Settings, validate
-from scrape_key_metrics import scrape_key_metrics
+from scrape_sales_by_product import scrape_sales_by_product
 from send_email import send_email
 from send_whatsapp import send_whatsapp_text
 
@@ -17,11 +17,11 @@ def main() -> None:
     print("Settings validated. Opening Syrve and scraping data...")
 
     output_dir = Path("output")
-    report_file, html, plain_text = scrape_key_metrics(settings, output_dir)
+    report_file, html, plain_text = scrape_sales_by_product(settings, output_dir)
     print("Scraping finished. Preparing delivery...")
 
     today = datetime.now().strftime("%Y-%m-%d")
-    subject = f"تقرير Key Metrics - اليوم السابق - {today}"
+    subject = f"تقرير Sales by Product - اليوم السابق - {today}"
 
     # Save plain-text report to artifact as well.
     (output_dir / "whatsapp_report.txt").write_text(plain_text, encoding="utf-8")
