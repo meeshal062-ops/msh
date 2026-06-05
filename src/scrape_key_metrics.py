@@ -33,12 +33,21 @@ def _debug_dump(page: Page, name: str) -> None:
 
 
 def _click_text_robust(page: Page, texts: Iterable[str], timeout: int = 12000) -> None:
-    """Click by text using several strategies, including JS innerText search."""
+    """Click by text using several strategies, including exact matching first.
+
+    Exact matching is important in Syrve because the menu contains both "Reports" and
+    "Reports 2.0". A loose text search for "Reports" may click the wrong section.
+    """
     last_error = None
     for text in texts:
         if not text:
             continue
         strategies = [
+            # Exact text first
+            lambda t=text: page.get_by_text(t, exact=True).first.click(timeout=timeout),
+            lambda t=text: page.locator(f"xpath=//*[normalize-space(.)={repr(text)}]").first.click(timeout=timeout),
+            lambda t=text: page.get_by_role("button", name=re.compile(rf"^{re.escape(t)}$", re.I)).first.click(timeout=3000),
+            # Then partial text
             lambda t=text: page.get_by_text(t, exact=False).first.click(timeout=timeout),
             lambda t=text: page.locator(f"text={t}").first.click(timeout=timeout),
             lambda t=text: page.get_by_role("button", name=re.compile(re.escape(t), re.I)).first.click(timeout=3000),
@@ -49,12 +58,14 @@ def _click_text_robust(page: Page, texts: Iterable[str], timeout: int = 12000) -
                 return
             except Exception as exc:
                 last_error = exc
-        # Last resort: JS click first visible-ish element whose innerText contains the target text.
+        # Last resort: JS click exact innerText first, then contains.
         try:
             clicked = page.evaluate(
                 """(needle) => {
+                    const n = String(needle).trim().toLowerCase();
                     const els = Array.from(document.querySelectorAll('button,a,div,span,li,md-list-item,mat-list-item,*'));
-                    const el = els.find(e => (e.innerText || '').toLowerCase().includes(String(needle).toLowerCase()));
+                    let el = els.find(e => (e.innerText || '').trim().toLowerCase() === n);
+                    if (!el) el = els.find(e => (e.innerText || '').toLowerCase().includes(n));
                     if (el) { el.click(); return true; }
                     return false;
                 }""",
@@ -65,6 +76,41 @@ def _click_text_robust(page: Page, texts: Iterable[str], timeout: int = 12000) -
         except Exception as exc:
             last_error = exc
     raise RuntimeError(f"Could not click any of these texts: {list(texts)}. Last error: {last_error}")
+
+
+def _click_reports_section(page: Page, timeout: int = 12000) -> None:
+    """Click the legacy Reports section specifically, not Reports 2.0."""
+    last_error = None
+    # Try exact visible text "Reports".
+    for locator in [
+        page.get_by_text("Reports", exact=True),
+        page.locator("xpath=//*[normalize-space(.)='Reports']"),
+        page.get_by_text("التقارير", exact=True),
+        page.locator("xpath=//*[normalize-space(.)='التقارير']"),
+    ]:
+        try:
+            locator.first.click(timeout=timeout)
+            return
+        except Exception as exc:
+            last_error = exc
+
+    # If not visible, scroll the left menu downward and try again.
+    try:
+        page.evaluate("""() => {
+            const candidates = Array.from(document.querySelectorAll('aside, nav, md-sidenav, mat-sidenav, div'));
+            for (const el of candidates) {
+              if ((el.innerText || '').includes('Reports 2.0') || (el.innerText || '').includes('Routine Restaurant')) {
+                el.scrollTop = el.scrollHeight;
+              }
+            }
+        }""")
+        page.wait_for_timeout(800)
+        page.get_by_text("Reports", exact=True).first.click(timeout=timeout)
+        return
+    except Exception as exc:
+        last_error = exc
+
+    raise RuntimeError(f"Could not click the legacy Reports section. Last error: {last_error}")
 
 
 @dataclass
@@ -174,15 +220,10 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
             print(f"Key Metrics menu item was not visible; trying report sections. Details: {first_exc}")
 
         try:
-            _click_text_robust(page, [
-                settings.syrve_reports_section_text,
-                "التقارير",
-                "Reports",
-                "Reports 2.0",
-            ], timeout=12000)
+            _click_reports_section(page, timeout=12000)
             page.wait_for_timeout(1500)
             _debug_dump(page, "03_after_reports_expand")
-            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=7000)
+            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=15000)
             page.wait_for_load_state("networkidle", timeout=60000)
             page.wait_for_timeout(5000)
             _debug_dump(page, "04_key_metrics_opened_from_reports")
