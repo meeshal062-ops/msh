@@ -272,31 +272,42 @@ def _select_branch(page: Page, branch_code: str) -> None:
         _debug_dump(page, f"branch_{branch_code}_before_click")
 
         print(f"{branch_code}: opening location selector...", flush=True)
-        # Most reliable: click the top-left location selector area in the header.
-        # In the GitHub runner viewport, the branch selector is around x=520,y=35.
+        # The location selector is in the top-left header after the dark side menu.
+        # In screenshots it is around x=220..390, y=30. Previous x=560 was the date area.
         try:
-            page.mouse.click(560, 35)
+            page.mouse.click(300, 34)
         except Exception:
             pass
         page.wait_for_timeout(2500)
 
-        # If coordinate click did not open Select location, try clicking visible location text.
+        # If coordinate click did not open Select location, click the visible Bxxx branch label by its center.
         try:
             body_text = page.locator("body").inner_text(timeout=3000)
         except Exception:
             body_text = ""
         if "Select location" not in body_text and "بحث" not in body_text and "Search" not in body_text:
-            print(f"{branch_code}: coordinate click did not open selector; trying text click...", flush=True)
-            clicked = page.evaluate(
+            print(f"{branch_code}: coordinate click did not open selector; trying branch-label center click...", flush=True)
+            rect = page.evaluate(
                 """() => {
                     const els = Array.from(document.querySelectorAll('button,a,div,span,*'));
-                    const el = els.find(e => /B\d+|\d+\s+of\s+\d+|من/.test(e.innerText || ''));
-                    if (el) { el.click(); return true; }
-                    return false;
+                    const candidates = els
+                      .filter(e => /B\d+/.test(e.innerText || ''))
+                      .map(e => {
+                        const r = e.getBoundingClientRect();
+                        const style = window.getComputedStyle(e);
+                        return {x:r.x, y:r.y, w:r.width, h:r.height, text:(e.innerText||'').slice(0,80), visible:r.width>0 && r.height>0 && style.display!=='none' && style.visibility!=='hidden'};
+                      })
+                      .filter(r => r.visible && r.y < 90 && r.x > 180 && r.x < 700)
+                      .sort((a,b) => (a.w*a.h) - (b.w*b.h));
+                    return candidates[0] || null;
                 }"""
             )
-            if not clicked:
-                page.mouse.click(520, 35)
+            print(f"{branch_code}: branch label rect: {rect}", flush=True)
+            if rect:
+                page.mouse.click(rect["x"] + rect["w"] / 2, rect["y"] + rect["h"] / 2)
+            else:
+                # Last resort: hard click the store icon/text area.
+                page.mouse.click(245, 34)
             page.wait_for_timeout(2500)
 
         print(f"{branch_code}: location selector should be open; saving debug...", flush=True)
