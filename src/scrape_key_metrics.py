@@ -13,23 +13,27 @@ from config import Settings
 from download_report import _click_by_text
 
 
-def _debug_dump(page: Page, name: str) -> None:
-    """Save screenshot + visible text + html to output/ for GitHub artifact debugging."""
+def _debug_dump(page: Page, name: str, html: bool = False) -> None:
+    """Save quick screenshot + visible text to output/ for GitHub artifact debugging.
+
+    Full HTML dumps can be slow on Angular pages, so they are disabled by default.
+    """
     out = Path("output")
     out.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
     try:
-        page.screenshot(path=str(out / f"{safe}.png"), full_page=False, timeout=5000)
+        page.screenshot(path=str(out / f"{safe}.png"), full_page=False, timeout=3000)
     except Exception as exc:
-        print(f"Could not save screenshot {safe}: {exc}")
+        print(f"Could not save screenshot {safe}: {exc}", flush=True)
     try:
-        (out / f"{safe}.txt").write_text(page.locator("body").inner_text(timeout=3000), encoding="utf-8")
+        (out / f"{safe}.txt").write_text(page.locator("body").inner_text(timeout=2000), encoding="utf-8")
     except Exception as exc:
-        print(f"Could not save text {safe}: {exc}")
-    try:
-        (out / f"{safe}.html").write_text(page.content(), encoding="utf-8")
-    except Exception as exc:
-        print(f"Could not save html {safe}: {exc}")
+        print(f"Could not save text {safe}: {exc}", flush=True)
+    if html:
+        try:
+            (out / f"{safe}.html").write_text(page.content(), encoding="utf-8")
+        except Exception as exc:
+            print(f"Could not save html {safe}: {exc}", flush=True)
 
 
 def _click_text_robust(page: Page, texts: Iterable[str], timeout: int = 12000) -> None:
@@ -178,6 +182,7 @@ def _login_if_needed(page: Page, settings: Settings) -> None:
 
 
 def _open_key_metrics(page: Page, settings: Settings) -> None:
+    print("Opening Key Metrics page/menu...", flush=True)
     """Open Routine Restaurant Operation -> Reports -> Key Metrics.
 
     Syrve UI changes text/language and sometimes the report list is already expanded.
@@ -215,6 +220,7 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
             page.wait_for_load_state("domcontentloaded", timeout=15000)
             page.wait_for_timeout(5000)
             _debug_dump(page, "04_key_metrics_opened_from_menu")
+            print("Key Metrics opened from menu.", flush=True)
             return
         except Exception as first_exc:
             print(f"Key Metrics menu item was not visible; trying report sections. Details: {first_exc}")
@@ -227,6 +233,7 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
             page.wait_for_load_state("domcontentloaded", timeout=15000)
             page.wait_for_timeout(5000)
             _debug_dump(page, "04_key_metrics_opened_from_reports")
+            print("Key Metrics opened from Reports section.", flush=True)
             return
         except Exception as second_exc:
             # Do NOT fail here. The supplied URL is already a dashboard URL (/dashboard/174327).
@@ -239,6 +246,7 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
                 pass
             page.wait_for_timeout(5000)
             _debug_dump(page, "04_using_current_dashboard")
+            print("Continuing with current dashboard.", flush=True)
             return
     except Exception:
         _debug_dump(page, "open_key_metrics_failed")
@@ -423,8 +431,9 @@ def _select_branch(page: Page, branch_code: str) -> None:
                 page.wait_for_timeout(4000)
             except Exception:
                 pass
-        print(f"{branch_code}: selected; saving debug...", flush=True)
+        print(f"{branch_code}: selected; saving quick debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_selected")
+        print(f"{branch_code}: branch step finished.", flush=True)
     except Exception:
         print(f"{branch_code}: branch selection failed; saving failure debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_failed")
@@ -539,11 +548,14 @@ def scrape_key_metrics(settings: Settings, output_dir: Path) -> tuple[Path, str,
             # while the default branch may expose only Reports 2.0.
             _select_branch(page, branch_code)
             _open_key_metrics(page, settings)
+            print(f"{branch_code}: scraping visible dashboard text...", flush=True)
             text = _get_page_text_after_scroll(page)
             raw_text_path = output_dir / f"raw_text_{branch_code}.txt"
             raw_text_path.write_text(text, encoding="utf-8")
             results.append(_extract_metrics(text, branch_code, raw_text_path))
+            print(f"{branch_code}: extracting top items...", flush=True)
             all_items.extend(_extract_top_items_by_qty_from_svg(page, branch_code))
+            print(f"{branch_code}: done.", flush=True)
 
         context.close()
         browser.close()
