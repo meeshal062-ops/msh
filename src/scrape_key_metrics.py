@@ -272,21 +272,27 @@ def _select_branch(page: Page, branch_code: str) -> None:
         _debug_dump(page, f"branch_{branch_code}_before_click")
 
         print(f"{branch_code}: opening location selector...", flush=True)
-        # The location selector is in the top-left header after the dark side menu.
-        # In screenshots it is around x=220..390, y=30. Previous x=560 was the date area.
-        try:
-            page.mouse.click(300, 34)
-        except Exception:
-            pass
-        page.wait_for_timeout(2500)
+        opened = False
+        # Best selector from Syrve HTML: <resto-store-selector><div class="store-picker">...
+        for selector in [
+            "resto-store-selector .store-picker",
+            ".store-picker",
+            "resto-store-selector",
+            ".store-name",
+        ]:
+            try:
+                page.locator(selector).first.click(timeout=4000, force=True)
+                page.wait_for_timeout(2500)
+                body_text = page.locator("body").inner_text(timeout=3000)
+                if "Select location" in body_text or "Al Khobar WH" in body_text or "B01 RIY" in body_text or "بحث" in body_text:
+                    opened = True
+                    print(f"{branch_code}: opened selector using {selector}", flush=True)
+                    break
+            except Exception as exc:
+                print(f"{branch_code}: selector {selector} did not open location page: {exc}", flush=True)
 
-        # If coordinate click did not open Select location, click the visible Bxxx branch label by its center.
-        try:
-            body_text = page.locator("body").inner_text(timeout=3000)
-        except Exception:
-            body_text = ""
-        if "Select location" not in body_text and "بحث" not in body_text and "Search" not in body_text:
-            print(f"{branch_code}: coordinate click did not open selector; trying branch-label center click...", flush=True)
+        if not opened:
+            print(f"{branch_code}: CSS click did not open selector; trying branch-label center click...", flush=True)
             rect = page.evaluate(
                 """() => {
                     const els = Array.from(document.querySelectorAll('button,a,div,span,*'));
@@ -306,12 +312,17 @@ def _select_branch(page: Page, branch_code: str) -> None:
             if rect:
                 page.mouse.click(rect["x"] + rect["w"] / 2, rect["y"] + rect["h"] / 2)
             else:
-                # Last resort: hard click the store icon/text area.
-                page.mouse.click(245, 34)
+                page.mouse.click(300, 34)
             page.wait_for_timeout(2500)
 
         print(f"{branch_code}: location selector should be open; saving debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_select_location_opened")
+        try:
+            opened_text = page.locator("body").inner_text(timeout=3000)
+        except Exception:
+            opened_text = ""
+        if "Select location" not in opened_text and "Al Khobar WH" not in opened_text and "B01 RIY" not in opened_text and "بحث" not in opened_text:
+            raise RuntimeError("Location selector did not open; cannot choose branch")
 
         print(f"{branch_code}: filling search...", flush=True)
         ok = page.evaluate(
