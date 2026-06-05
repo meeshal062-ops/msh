@@ -246,58 +246,111 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
 
 
 def _apply_report_date(page: Page, settings: Settings) -> str:
-    """Set report date. Current implementation uses the previous-day arrow if REPORT_DATE_MODE=yesterday.
+    """Return target report date.
 
-    From the screenshots, the top bar has left/right arrows around the date. If you start from today's
-    date, clicking the previous arrow once selects yesterday. This can be adjusted later if the site
-    opens on another date by default.
+    The Syrve dashboard opened by the supplied URL already shows the previous business date in
+    GitHub Actions. To avoid accidentally moving two days back, we do not click date arrows here.
+    If a fixed date picker is needed later, we can add it after seeing the date picker HTML.
     """
-    mode = settings.report_date_mode.lower().strip()
     target_date = datetime.now()
-    if mode == "yesterday":
+    if settings.report_date_mode.lower().strip() == "yesterday":
         target_date = target_date - timedelta(days=1)
-        try:
-            # The previous-date arrow is usually the left arrow near the date in the top bar.
-            page.locator("i, button, a").filter(has_text=re.compile("chevron_left|‹|<|previous", re.I)).first.click(timeout=4000)
-        except Exception:
-            try:
-                page.get_by_text("‹").first.click(timeout=4000)
-            except Exception as exc:
-                print(f"Could not click previous-day arrow automatically. Continuing with visible date. Error: {exc}")
-        page.wait_for_load_state("networkidle", timeout=60000)
-        page.wait_for_timeout(2500)
     return target_date.strftime("%Y-%m-%d")
 
-
 def _select_branch(page: Page, branch_code: str) -> None:
-    """Select branch by code from the Select location page.
-
-    The screenshot shows that clicking the current branch opens a 'Select location' screen with a search box.
-    We search by branch code, then click the matching row/arrow. Syrve updates data automatically.
-    """
+    """Select branch by code from the Select location page."""
     if not branch_code:
         return
     branch_code = branch_code.upper().strip()
     print(f"Selecting branch {branch_code}...")
-
-    # Click current branch selector in top bar, e.g. B26 Buraidah, Rehab.
-    page.get_by_text(re.compile(r"B\d+", re.I)).first.click(timeout=15000)
-    page.wait_for_timeout(1500)
-
-    # Fill search field on Select location page.
-    search = page.get_by_placeholder(re.compile("بحث|Search", re.I)).first
-    search.fill(branch_code, timeout=15000)
-    page.wait_for_timeout(1200)
-
-    # Click matching location row. If only an arrow is clickable, click near/inside the row.
     try:
-        page.get_by_text(re.compile(rf"\b{re.escape(branch_code)}\b", re.I)).first.click(timeout=10000)
+        _debug_dump(page, f"branch_{branch_code}_before_click")
+
+        # Click the current location in the top bar. Prefer a visible B-code in the header.
+        clicked = False
+        for locator in [
+            page.locator("text=/B\\d+/i").first,
+            page.get_by_text(re.compile(r"B\d+", re.I)).first,
+        ]:
+            try:
+                locator.click(timeout=8000)
+                clicked = True
+                break
+            except Exception:
+                pass
+        if not clicked:
+            # Coordinate fallback: top branch selector area.
+            page.mouse.click(560, 35)
+
+        page.wait_for_timeout(2000)
+        _debug_dump(page, f"branch_{branch_code}_select_location_opened")
+
+        # Use only visible search inputs; hidden inputs with placeholder Search exist in the DOM.
+        search = None
+        for selector in [
+            "input[placeholder='Search']:visible",
+            "input[placeholder='بحث']:visible",
+            "input:visible",
+        ]:
+            loc = page.locator(selector).first
+            try:
+                loc.wait_for(state="visible", timeout=5000)
+                search = loc
+                break
+            except Exception:
+                continue
+
+        if search is not None:
+            search.click(timeout=5000)
+            search.fill(branch_code, timeout=5000)
+        else:
+            # JS fallback: set first visible input value and dispatch events.
+            ok = page.evaluate(
+                """(code) => {
+                    const inputs = Array.from(document.querySelectorAll('input'));
+                    const input = inputs.find(i => {
+                      const r = i.getBoundingClientRect();
+                      const style = window.getComputedStyle(i);
+                      return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                    });
+                    if (!input) return false;
+                    input.focus();
+                    input.value = code;
+                    input.dispatchEvent(new Event('input', {bubbles:true}));
+                    input.dispatchEvent(new Event('change', {bubbles:true}));
+                    return true;
+                }""",
+                branch_code,
+            )
+            if not ok:
+                raise RuntimeError("Could not find a visible branch search input")
+
+        page.wait_for_timeout(1500)
+        _debug_dump(page, f"branch_{branch_code}_after_search")
+
+        # Click the matching branch row/arrow.
+        try:
+            page.get_by_text(re.compile(rf"\b{re.escape(branch_code)}\b", re.I)).first.click(timeout=10000)
+        except Exception:
+            clicked = page.evaluate(
+                """(code) => {
+                    const c = String(code).toLowerCase();
+                    const els = Array.from(document.querySelectorAll('button,a,div,span,li,*'));
+                    const row = els.find(e => (e.innerText || '').toLowerCase().includes(c));
+                    if (row) { row.click(); return true; }
+                    return false;
+                }""",
+                branch_code,
+            )
+            if not clicked:
+                raise
+
+        page.wait_for_load_state("networkidle", timeout=60000)
+        page.wait_for_timeout(4000)
+        _debug_dump(page, f"branch_{branch_code}_selected")
     except Exception:
-        _click_by_text(page, branch_code, timeout=10000)
-
-    page.wait_for_load_state("networkidle", timeout=60000)
-    page.wait_for_timeout(3500)
-
+        _debug_dump(page, f"branch_{branch_code}_failed")
+        raise
 
 def _extract_metrics(text: str, branch_code: str, raw_text_path: Path) -> BranchMetrics:
     return BranchMetrics(
@@ -401,13 +454,13 @@ def scrape_key_metrics(settings: Settings, output_dir: Path) -> tuple[Path, str,
         page.set_default_timeout(30000)
 
         _login_if_needed(page, settings)
-        _open_key_metrics(page, settings)
         report_date = _apply_report_date(page, settings)
 
         for branch_code in branch_codes:
+            # Select the branch first. Some branches expose the legacy Reports -> Key Metrics menu,
+            # while the default branch may expose only Reports 2.0.
             _select_branch(page, branch_code)
-            # Branch selection may reset/open report date. Apply yesterday again defensively only if needed.
-            # If the selected date is retained, the extra click may be wrong, so we do not repeat it here.
+            _open_key_metrics(page, settings)
             text = _get_page_text_after_scroll(page)
             raw_text_path = output_dir / f"raw_text_{branch_code}.txt"
             raw_text_path.write_text(text, encoding="utf-8")
