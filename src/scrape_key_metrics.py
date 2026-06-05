@@ -358,7 +358,6 @@ def _select_branch(page: Page, branch_code: str) -> None:
                   o.h >= 10 && o.h <= 90 &&
                   o.w >= 20
                 );
-                // Avoid giant app/menu containers. Prefer exact/small visible row labels.
                 candidates.sort((a,b) => {
                   const ae = a.text.toLowerCase().startsWith(c) ? 0 : 1;
                   const be = b.text.toLowerCase().startsWith(c) ? 0 : 1;
@@ -367,15 +366,15 @@ def _select_branch(page: Page, branch_code: str) -> None:
                 });
                 const target = candidates[0];
                 if (!target) return {ok:false, count:0, sample:[]};
-                // Click the center of the selected visible candidate. If the row has a parent row, bubbling should select it.
-                target.e.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, view:window}));
-                target.e.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, view:window}));
-                target.e.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, view:window}));
-                target.e.dispatchEvent(new MouseEvent('click', {bubbles:true, view:window}));
+
+                // Scroll the exact target into the visible area first. Returning an off-screen rect
+                // such as y=4003 means Playwright/Angular may not really select it.
+                target.e.scrollIntoView({block:'center', inline:'center'});
+                const rr = target.e.getBoundingClientRect();
                 return {
                   ok:true,
                   count:candidates.length,
-                  picked:{text:target.text.slice(0,120), x:target.x, y:target.y, w:target.w, h:target.h, area:target.area},
+                  picked:{text:target.text.slice(0,120), x:rr.x, y:rr.y, w:rr.width, h:rr.height, area:rr.width*rr.height},
                   sample:candidates.slice(0,5).map(o => ({text:o.text.slice(0,80), x:o.x, y:o.y, w:o.w, h:o.h, area:o.area}))
                 };
             }""",
@@ -383,7 +382,21 @@ def _select_branch(page: Page, branch_code: str) -> None:
         )
         print(f"{branch_code}: click result: {clicked}", flush=True)
         if not clicked or not clicked.get("ok"):
-            raise RuntimeError(f"Could not click branch result. Result={clicked}")
+            raise RuntimeError(f"Could not find branch result. Result={clicked}")
+
+        # Real mouse click after scrollIntoView. Click near the row text, then near the row arrow/right side.
+        picked = clicked.get("picked") or {}
+        x = float(picked.get("x", 0)); y = float(picked.get("y", 0)); w = float(picked.get("w", 0)); h = float(picked.get("h", 0))
+        if w > 0 and h > 0:
+            page.mouse.click(x + min(w / 2, 120), y + h / 2)
+            page.wait_for_timeout(1500)
+            # If still on the selector page, click the right side of the same row (where Syrve shows the arrow).
+            try:
+                temp_text = page.locator("body").inner_text(timeout=1500)
+            except Exception:
+                temp_text = ""
+            if "Select location" in temp_text or "Search" in temp_text or "بحث" in temp_text:
+                page.mouse.click(min(x + max(w + 35, 250), 1850), y + h / 2)
 
         # Do not wait for strict networkidle; Angular apps often keep requests open.
         page.wait_for_timeout(5000)
