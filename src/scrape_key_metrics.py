@@ -348,10 +348,17 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
                   .map(e => {
                     const r = e.getBoundingClientRect();
                     const style = window.getComputedStyle(e);
-                    return {e, r, visible:r.width>0 && r.height>0 && style.display!=='none' && style.visibility!=='hidden'};
+                    return {e, r, visible:r.width>0 && r.height>0 && style.display!=='none' && style.visibility!=='hidden', area:r.width*r.height};
                   })
-                  .filter(o => o.visible && Math.abs((o.r.y + o.r.height/2) - (rr.y + rr.height/2)) < 32)
-                  .sort((a,b) => a.r.x - b.r.x);
+                  .filter(o => o.visible && Math.abs((o.r.y + o.r.height/2) - (rr.y + rr.height/2)) < 32);
+                // Some row containers expose role=checkbox and are 400px wide. Prefer the real 28x28 checkbox.
+                boxes.sort((a,b) => {
+                  const as = (a.r.width <= 45 && a.r.height <= 45) ? 0 : 1;
+                  const bs = (b.r.width <= 45 && b.r.height <= 45) ? 0 : 1;
+                  if (as !== bs) return as - bs;
+                  if (a.area !== b.area) return a.area - b.area;
+                  return a.r.x - b.r.x;
+                });
                 const box = boxes[0];
 
                 let checked = false;
@@ -387,7 +394,7 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
                 cy = float(row.get("y", 500)) + float(row.get("h", 44)) / 2
             print(f"{branch_code}: mouse clicking checkbox for {code} at ({cx:.1f},{cy:.1f})", flush=True)
             page.mouse.click(cx, cy)
-            page.wait_for_timeout(700)
+            page.wait_for_timeout(900)
             result["changed"] = True
         else:
             result["changed"] = False
