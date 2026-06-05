@@ -249,14 +249,46 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
         product_df.to_excel(writer, index=False, sheet_name="Products")
 
     plain_text = _format_plain_text(report_date, summaries, products)
+
+    def _money_to_float(value: str) -> float:
+        try:
+            return float((value or "0").replace(",", ""))
+        except Exception:
+            return 0.0
+
+    total_net_sales = sum(_money_to_float(m.net_sales) for m in summaries)
+    total_gross_sales = sum(_money_to_float(m.gross_sales_after_discount) for m in summaries)
+    total_vat = sum(_money_to_float(m.vat_amount) for m in summaries)
+    total_discount = sum(_money_to_float(m.discount_amount) for m in summaries)
+
     rows = "".join(
         f"<tr><td>{m.branch_code}</td><td>{m.gross_sales_after_discount}</td><td>{m.net_sales}</td><td>{m.vat_amount}</td><td>{m.discount_amount}</td><td>{m.avg_order_amount}</td></tr>"
         for m in summaries
     )
+    total_row = f"""
+        <tr style="font-weight: bold; background: #ecfdf5;">
+          <td>Total</td>
+          <td>{total_gross_sales:,.2f}</td>
+          <td>{total_net_sales:,.2f}</td>
+          <td>{total_vat:,.2f}</td>
+          <td>{total_discount:,.2f}</td>
+          <td>-</td>
+        </tr>
+    """
     html = f"""
     <div style="font-family: Arial, sans-serif; line-height: 1.7">
       <h2>Sales by Product Report - Previous Business Day</h2>
       <p><b>Business date:</b> {report_date}</p>
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 18px 0;">
+        <div style="background:#ecfdf5; border:1px solid #a7f3d0; border-radius:14px; padding:14px;">
+          <div style="font-size:12px; color:#047857; font-weight:bold; text-transform:uppercase;">Total Net Sales</div>
+          <div style="font-size:26px; font-weight:bold; color:#064e3b; margin-top:4px;">{total_net_sales:,.2f} SAR</div>
+        </div>
+        <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:14px; padding:14px;">
+          <div style="font-size:12px; color:#1d4ed8; font-weight:bold; text-transform:uppercase;">Total Gross Sales After Discount</div>
+          <div style="font-size:22px; font-weight:bold; color:#1e3a8a; margin-top:4px;">{total_gross_sales:,.2f} SAR</div>
+        </div>
+      </div>
       <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse">
         <tr>
           <th>Branch</th>
@@ -267,6 +299,7 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
           <th>Average Order</th>
         </tr>
         {rows}
+        {total_row}
       </table>
     </div>
     """
