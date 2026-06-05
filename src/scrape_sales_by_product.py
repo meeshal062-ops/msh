@@ -142,39 +142,72 @@ def _try_expand_and_extract_products(page: Page, branch_code: str) -> list[Produ
 
 
 def _format_plain_text(report_date: str, metrics: list[BranchSales], products: list[ProductRow]) -> str:
-    lines = ["تقرير Sales by Product - اليوم السابق", f"التاريخ: {report_date}", ""]
+    """Format WhatsApp report in clean English."""
+    lines = [
+        "Sales by Product Report - Previous Business Day",
+        f"Business date: {report_date}",
+        "",
+    ]
+
     by_branch: dict[str, list[ProductRow]] = {}
     for p in products:
         by_branch.setdefault(p.branch_code, []).append(p)
 
     total_gross = 0.0
-    for m in metrics:
+    total_net = 0.0
+    total_vat = 0.0
+    total_discount = 0.0
+
+    def to_float(value: str) -> float:
         try:
-            total_gross += float(m.gross_sales_after_discount.replace(',', ''))
+            return float((value or "0").replace(',', ''))
         except Exception:
-            pass
+            return 0.0
+
+    for m in metrics:
+        total_gross += to_float(m.gross_sales_after_discount)
+        total_net += to_float(m.net_sales)
+        total_vat += to_float(m.vat_amount)
+        total_discount += to_float(m.discount_amount)
+
+    if total_gross or total_net:
         lines.extend([
-            f"الفرع: {m.branch_code}",
-            f"إجمالي المبيعات بعد الخصم: {m.gross_sales_after_discount or '-'} ر.س",
-            f"صافي المبيعات: {m.net_sales or '-'} ر.س",
-            f"VAT: {m.vat_amount or '-'} ر.س",
-            f"الخصم: {m.discount_amount or '-'} ر.س",
-            f"متوسط الطلب: {m.avg_order_amount or '-'} ر.س",
-            f"متوسط الإيراد للضيف: {m.avg_revenue_per_guest or '-'} ر.س",
+            "Overall Summary",
+            f"Total Gross Sales After Discount: {total_gross:,.2f} SAR",
+            f"Total Net Sales: {total_net:,.2f} SAR",
+            f"Total VAT: {total_vat:,.2f} SAR",
+            f"Total Discount: {total_discount:,.2f} SAR",
+            "",
+            "=" * 34,
         ])
+
+    for m in metrics:
+        branch_title = m.branch_name or m.branch_code
+        lines.extend([
+            f"Branch: {m.branch_code}",
+            f"Name: {branch_title}",
+            f"Gross Sales After Discount: {m.gross_sales_after_discount or '-'} SAR",
+            f"Net Sales: {m.net_sales or '-'} SAR",
+            f"VAT Amount: {m.vat_amount or '-'} SAR",
+            f"Discount Amount: {m.discount_amount or '-'} SAR",
+            f"Average Order Amount: {m.avg_order_amount or '-'} SAR",
+            f"Average Revenue per Guest: {m.avg_revenue_per_guest or '-'} SAR",
+            f"Cost: {m.cost or '-'} SAR",
+        ])
+
         items = by_branch.get(m.branch_code, [])
         if items:
-            lines.append("أعلى أصناف ظاهرة حسب المبيعات:")
+            lines.append("")
+            lines.append("Top Visible Products by Sales:")
             for item in items:
-                lines.append(f"{item.rank}. {item.item_name} - {item.gross_sales_after_discount} ر.س")
+                lines.append(f"{item.rank}. {item.item_name} - {item.gross_sales_after_discount} SAR")
         else:
-            lines.append("ملاحظة: تم استخراج إجماليات الفرع من Sales by Product، ولم تظهر صفوف الأصناف التفصيلية في الجدول.")
-        lines.append("-" * 35)
+            lines.append("")
+            lines.append("Product details were not visible in the table. Branch totals were extracted successfully.")
 
-    if total_gross:
-        lines.insert(2, f"إجمالي مبيعات الفروع: {total_gross:,.2f} ر.س")
-        lines.insert(3, "")
-    return "\n".join(lines)
+        lines.extend(["-" * 34, ""])
+
+    return "\n".join(lines).strip()
 
 
 def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path, str, str]:
@@ -221,11 +254,18 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
         for m in summaries
     )
     html = f"""
-    <div dir="rtl" style="font-family: Arial, sans-serif; line-height: 1.7">
-      <h2>تقرير Sales by Product - اليوم السابق</h2>
-      <p><b>التاريخ:</b> {report_date}</p>
+    <div style="font-family: Arial, sans-serif; line-height: 1.7">
+      <h2>Sales by Product Report - Previous Business Day</h2>
+      <p><b>Business date:</b> {report_date}</p>
       <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse">
-        <tr><th>الفرع</th><th>إجمالي المبيعات بعد الخصم</th><th>صافي المبيعات</th><th>VAT</th><th>الخصم</th><th>متوسط الطلب</th></tr>
+        <tr>
+          <th>Branch</th>
+          <th>Gross Sales After Discount</th>
+          <th>Net Sales</th>
+          <th>VAT</th>
+          <th>Discount</th>
+          <th>Average Order</th>
+        </tr>
         {rows}
       </table>
     </div>

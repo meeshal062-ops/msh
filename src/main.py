@@ -21,7 +21,7 @@ def main() -> None:
     print("Scraping finished. Preparing delivery...")
 
     today = datetime.now().strftime("%Y-%m-%d")
-    subject = f"تقرير Sales by Product - اليوم السابق - {today}"
+    subject = f"Sales by Product Report - Previous Business Day - {today}"
 
     # Save plain-text report to artifact as well.
     (output_dir / "whatsapp_report.txt").write_text(plain_text, encoding="utf-8")
@@ -52,7 +52,7 @@ def main() -> None:
 
     if whatsapp_error and settings.email_fallback_enabled and not email_sent:
         fallback_subject = f"[WhatsApp failed] {subject}"
-        fallback_html = html + f"<p><b>ملاحظة:</b> فشل إرسال واتساب، لذلك تم إرسال التقرير على الإيميل. الخطأ: {whatsapp_error}</p>"
+        fallback_html = html + f"<p><b>Note:</b> WhatsApp delivery failed, so this report was sent by email. Error: {whatsapp_error}</p>"
         print("Sending fallback email because WhatsApp failed...")
         send_email(settings, fallback_subject, fallback_html, report_file)
         email_sent = True
