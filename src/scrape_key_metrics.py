@@ -172,7 +172,7 @@ def _login_if_needed(page: Page, settings: Settings) -> None:
         page.get_by_label("Username").fill(settings.syrve_username, timeout=10000)
         page.get_by_label("Password").fill(settings.syrve_password)
         page.get_by_role("button", name="Sign in").click()
-        page.wait_for_load_state("networkidle", timeout=60000)
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
     except Exception:
         print("Login form was not visible; continuing.")
 
@@ -184,7 +184,7 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
     This function tries multiple visible labels and saves debug artifacts if it fails.
     """
     try:
-        page.wait_for_load_state("networkidle", timeout=60000)
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
     except Exception:
         pass
     page.wait_for_timeout(3000)
@@ -211,8 +211,8 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
         # Try the report directly first. In some Syrve accounts the dashboard URL already opens
         # the Key Metrics dashboard and there is no separate "Key Metrics" menu item.
         try:
-            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=7000)
-            page.wait_for_load_state("networkidle", timeout=60000)
+            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=4000)
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
             page.wait_for_timeout(5000)
             _debug_dump(page, "04_key_metrics_opened_from_menu")
             return
@@ -220,11 +220,11 @@ def _open_key_metrics(page: Page, settings: Settings) -> None:
             print(f"Key Metrics menu item was not visible; trying report sections. Details: {first_exc}")
 
         try:
-            _click_reports_section(page, timeout=12000)
-            page.wait_for_timeout(1500)
+            _click_reports_section(page, timeout=5000)
+            page.wait_for_timeout(1000)
             _debug_dump(page, "03_after_reports_expand")
-            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=15000)
-            page.wait_for_load_state("networkidle", timeout=60000)
+            _click_text_robust(page, [settings.syrve_report_name, "Key Metrics"], timeout=5000)
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
             page.wait_for_timeout(5000)
             _debug_dump(page, "04_key_metrics_opened_from_reports")
             return
@@ -344,18 +344,40 @@ def _select_branch(page: Page, branch_code: str) -> None:
         clicked = page.evaluate(
             """(code) => {
                 const c = String(code).toLowerCase();
-                const els = Array.from(document.querySelectorAll('button,a,div,span,li,*'));
-                // Prefer row-like elements that contain the branch code.
-                let candidates = els.filter(e => (e.innerText || '').toLowerCase().includes(c));
-                candidates = candidates.filter(e => {
+                const els = Array.from(document.querySelectorAll('button,a,div,span,li,section'));
+                let candidates = els.map(e => {
+                  const text = (e.innerText || '').trim();
                   const r = e.getBoundingClientRect();
                   const style = window.getComputedStyle(e);
-                  return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                  const visible = r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                  return {e, text, x:r.x, y:r.y, w:r.width, h:r.height, area:r.width*r.height, visible};
+                }).filter(o =>
+                  o.visible &&
+                  o.text.toLowerCase().includes(c) &&
+                  o.area > 20 && o.area < 90000 &&
+                  o.h >= 10 && o.h <= 90 &&
+                  o.w >= 20
+                );
+                // Avoid giant app/menu containers. Prefer exact/small visible row labels.
+                candidates.sort((a,b) => {
+                  const ae = a.text.toLowerCase().startsWith(c) ? 0 : 1;
+                  const be = b.text.toLowerCase().startsWith(c) ? 0 : 1;
+                  if (ae !== be) return ae - be;
+                  return a.area - b.area;
                 });
-                const el = candidates[0];
-                if (!el) return {ok:false, count:0};
-                el.click();
-                return {ok:true, count:candidates.length, text:(el.innerText || '').slice(0,80)};
+                const target = candidates[0];
+                if (!target) return {ok:false, count:0, sample:[]};
+                // Click the center of the selected visible candidate. If the row has a parent row, bubbling should select it.
+                target.e.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, view:window}));
+                target.e.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, view:window}));
+                target.e.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, view:window}));
+                target.e.dispatchEvent(new MouseEvent('click', {bubbles:true, view:window}));
+                return {
+                  ok:true,
+                  count:candidates.length,
+                  picked:{text:target.text.slice(0,120), x:target.x, y:target.y, w:target.w, h:target.h, area:target.area},
+                  sample:candidates.slice(0,5).map(o => ({text:o.text.slice(0,80), x:o.x, y:o.y, w:o.w, h:o.h, area:o.area}))
+                };
             }""",
             branch_code,
         )
@@ -364,7 +386,19 @@ def _select_branch(page: Page, branch_code: str) -> None:
             raise RuntimeError(f"Could not click branch result. Result={clicked}")
 
         # Do not wait for strict networkidle; Angular apps often keep requests open.
-        page.wait_for_timeout(6000)
+        page.wait_for_timeout(5000)
+        # Verify whether the header changed to the requested branch. If not, try pressing Enter as fallback.
+        try:
+            after_text = page.locator("body").inner_text(timeout=3000)
+        except Exception:
+            after_text = ""
+        if branch_code not in after_text[:500]:
+            print(f"{branch_code}: branch not clearly selected yet; pressing Enter fallback...", flush=True)
+            try:
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(4000)
+            except Exception:
+                pass
         print(f"{branch_code}: selected; saving debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_selected")
     except Exception:
