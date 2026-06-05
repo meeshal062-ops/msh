@@ -1,0 +1,38 @@
+name: Diagnose Sales by Product
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+      - name: Diagnose Reports 2.0 Sales by Product
+        env:
+          SYRVE_URL: ${{ secrets.SYRVE_URL }}
+          SYRVE_USERNAME: ${{ secrets.SYRVE_USERNAME }}
+          SYRVE_PASSWORD: ${{ secrets.SYRVE_PASSWORD }}
+          SYRVE_MAIN_MENU_TEXT: ${{ secrets.SYRVE_MAIN_MENU_TEXT }}
+          SYRVE_REPORTS_SECTION_TEXT: ${{ secrets.SYRVE_REPORTS_SECTION_TEXT }}
+          SYRVE_REPORT_NAME: ${{ secrets.SYRVE_REPORT_NAME }}
+          BRANCH_CODES: ${{ secrets.BRANCH_CODES }}
+          REPORT_DATE_MODE: ${{ secrets.REPORT_DATE_MODE }}
+          WHATSAPP_ENABLED: 'false'
+          EMAIL_ENABLED: 'false'
+        run: python -u src/diagnose_sales_product.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diagnose-sales-product-output
+          path: output/
+          if-no-files-found: ignore
