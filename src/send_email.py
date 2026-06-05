@@ -1,4 +1,5 @@
 from pathlib import Path
+import mimetypes
 import smtplib
 from email.message import EmailMessage
 from config import Settings
@@ -12,11 +13,15 @@ def send_email(settings: Settings, subject: str, html_body: str, attachment: Pat
     msg.set_content("Daily sales report is attached.")
     msg.add_alternative(html_body, subtype="html")
 
-    data = attachment.read_bytes()
+    ctype, _ = mimetypes.guess_type(str(attachment))
+    if ctype is None:
+        ctype = "application/octet-stream"
+    maintype, subtype = ctype.split("/", 1)
+
     msg.add_attachment(
-        data,
-        maintype="application",
-        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        attachment.read_bytes(),
+        maintype=maintype,
+        subtype=subtype,
         filename=attachment.name,
     )
 
