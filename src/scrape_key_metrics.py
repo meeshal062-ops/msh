@@ -311,7 +311,12 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
         page.wait_for_timeout(900)
 
     def set_checkbox(code: str, desired: bool) -> dict:
-        # Scroll row into view, inspect checkbox state, click only if a change is needed.
+        """Set checkbox for a store row using real mouse coordinates.
+
+        In Syrve's drawer, JS click events on mat-checkbox are unreliable. The actual checkbox
+        is visually about 10-25 px from the left edge of the row. So we scroll the exact row into
+        view, compute its visible rect, then click the checkbox coordinate with page.mouse.
+        """
         result = page.evaluate(
             """({code, desired}) => {
                 const c = String(code).toLowerCase();
@@ -324,55 +329,70 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
                   return {e, text, r, area:r.width*r.height, visible};
                 }).filter(o =>
                   o.visible && o.text.toLowerCase().includes(c) &&
-                  o.area > 100 && o.area < 120000 && o.r.height >= 18 && o.r.height <= 90
+                  o.area > 100 && o.area < 150000 && o.r.height >= 18 && o.r.height <= 95
                 );
                 rows.sort((a,b) => {
                   const as = a.text.toLowerCase().startsWith(c) ? 0 : 1;
                   const bs = b.text.toLowerCase().startsWith(c) ? 0 : 1;
                   if (as !== bs) return as - bs;
-                  return b.r.width - a.r.width; // prefer full row over text span
+                  // Prefer the wider full row, not the small text span.
+                  return b.r.width - a.r.width;
                 });
                 const row = rows[0];
                 if (!row) return {found:false, changed:false, reason:'row_not_found'};
                 row.e.scrollIntoView({block:'center', inline:'center'});
-
-                // Recompute after scroll.
                 const rr = row.e.getBoundingClientRect();
-                let container = row.e;
-                for (let i=0; i<4 && container && !container.querySelector('input[type="checkbox"], [role="checkbox"], mat-checkbox'); i++) {
-                  container = container.parentElement;
-                }
-                if (!container) container = row.e;
-                let checkbox = container.querySelector('input[type="checkbox"], [role="checkbox"], mat-checkbox');
-                if (!checkbox) {
-                  // Try nearest checkbox horizontally in the same row.
-                  const boxes = Array.from(document.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox'))
-                    .map(e => ({e, r:e.getBoundingClientRect()}))
-                    .filter(o => Math.abs((o.r.y + o.r.height/2) - (rr.y + rr.height/2)) < 30 && o.r.width > 0 && o.r.height > 0)
-                    .sort((a,b) => a.r.x - b.r.x);
-                  if (boxes[0]) checkbox = boxes[0].e;
-                }
-                if (!checkbox) return {found:true, changed:false, reason:'checkbox_not_found', text:row.text.slice(0,100)};
+
+                // Find checkbox visually aligned with the row.
+                const boxes = Array.from(document.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox, .mat-mdc-checkbox'))
+                  .map(e => {
+                    const r = e.getBoundingClientRect();
+                    const style = window.getComputedStyle(e);
+                    return {e, r, visible:r.width>0 && r.height>0 && style.display!=='none' && style.visibility!=='hidden'};
+                  })
+                  .filter(o => o.visible && Math.abs((o.r.y + o.r.height/2) - (rr.y + rr.height/2)) < 32)
+                  .sort((a,b) => a.r.x - b.r.x);
+                const box = boxes[0];
 
                 let checked = false;
-                if ('checked' in checkbox) checked = !!checkbox.checked;
-                else if (checkbox.getAttribute('aria-checked') != null) checked = checkbox.getAttribute('aria-checked') === 'true';
-                else checked = /checked|selected/.test(checkbox.className || '') || !!checkbox.querySelector('.mat-mdc-checkbox-checked,.mdc-checkbox--selected,input:checked');
-
-                if (checked !== desired) {
-                  checkbox.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, view:window}));
-                  checkbox.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, view:window}));
-                  checkbox.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, view:window}));
-                  checkbox.dispatchEvent(new MouseEvent('click', {bubbles:true, view:window}));
-                  return {found:true, changed:true, wasChecked:checked, desired, text:row.text.slice(0,100), x:rr.x, y:rr.y};
+                if (box) {
+                  const e = box.e;
+                  if ('checked' in e) checked = !!e.checked;
+                  else if (e.getAttribute('aria-checked') != null) checked = e.getAttribute('aria-checked') === 'true';
+                  else checked = /checked|selected|mat-mdc-checkbox-checked|mdc-checkbox--selected/.test(String(e.className || '')) || !!e.querySelector('input:checked,.mdc-checkbox--selected,.mat-mdc-checkbox-checked');
                 }
-                return {found:true, changed:false, wasChecked:checked, desired, text:row.text.slice(0,100), x:rr.x, y:rr.y};
+                return {
+                  found:true,
+                  desired,
+                  checked,
+                  needsClick: checked !== desired,
+                  text: row.text.slice(0,120),
+                  row:{x:rr.x, y:rr.y, w:rr.width, h:rr.height},
+                  box: box ? {x:box.r.x, y:box.r.y, w:box.r.width, h:box.r.height} : null,
+                  boxes: boxes.slice(0,3).map(o => ({x:o.r.x,y:o.r.y,w:o.r.width,h:o.r.height}))
+                };
             }""",
             {"code": code, "desired": desired},
         )
-        print(f"{branch_code}: set {code} -> {desired}: {result}", flush=True)
-        page.wait_for_timeout(700)
+        print(f"{branch_code}: inspect {code} -> {desired}: {result}", flush=True)
+        if result.get("found") and result.get("needsClick"):
+            box = result.get("box")
+            row = result.get("row") or {}
+            if box:
+                cx = float(box["x"]) + float(box["w"]) / 2
+                cy = float(box["y"]) + float(box["h"]) / 2
+            else:
+                # Drawer checkbox is at the left side of the row.
+                cx = float(row.get("x", 1490)) + 14
+                cy = float(row.get("y", 500)) + float(row.get("h", 44)) / 2
+            print(f"{branch_code}: mouse clicking checkbox for {code} at ({cx:.1f},{cy:.1f})", flush=True)
+            page.mouse.click(cx, cy)
+            page.wait_for_timeout(700)
+            result["changed"] = True
+        else:
+            result["changed"] = False
         return result
+
 
     try:
         print(f"{branch_code}: saving before-click debug...", flush=True)
