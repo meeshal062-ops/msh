@@ -43,27 +43,10 @@ def _target_date(settings: Settings) -> str:
     return d.strftime("%Y-%m-%d")
 
 
-def _set_previous_business_date(page: Page, settings: Settings) -> None:
-    """Set Syrve's visible date selector to the previous business day.
-
-    The report label was already using yesterday, but the Syrve UI date was not forced in
-    the Sales by Product flow. This function clicks the previous-day arrow once only when
-    needed, before processing branches.
-    """
-    if settings.report_date_mode.lower().strip() != "yesterday":
-        return
-
-    now = datetime.now(ZoneInfo("Asia/Riyadh"))
-    today_ui = now.strftime("%d/%m/%y")
-    target_ui = (now - timedelta(days=1)).strftime("%d/%m/%y")
-    print(f"Setting report date to previous business day: target={target_ui}, today={today_ui}", flush=True)
-
-    # Wait for the date selector to exist after login.
-    page.wait_for_timeout(1500)
-
-    current_value = ""
+def _read_syrve_date_value(page: Page) -> str:
+    """Read the visible Syrve date input value, e.g. 06/06/26."""
     try:
-        current_value = page.evaluate(
+        return page.evaluate(
             """() => {
                 const inputs = Array.from(document.querySelectorAll('resto-range-selector-input input, input'));
                 const visible = inputs.filter(i => {
@@ -71,26 +54,24 @@ def _set_previous_business_date(page: Page, settings: Settings) -> None:
                   const style = window.getComputedStyle(i);
                   return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
                 });
-                return visible.map(i => i.value || i.getAttribute('value') || '').find(v => /\d{2}\/\d{2}\/\d{2}/.test(v)) || '';
+                for (const i of visible) {
+                  const v = i.value || i.getAttribute('value') || '';
+                  if (/\d{2}\/\d{2}\/\d{2}/.test(v)) return v;
+                }
+                return '';
             }"""
-        )
-    except Exception as exc:
-        print(f"Could not read current date input: {exc}", flush=True)
+        ) or ""
+    except Exception:
+        return ""
 
-    print(f"Current Syrve date selector value: {current_value or 'unknown'}", flush=True)
 
-    if target_ui in current_value:
-        print("Syrve date is already set to previous business day.", flush=True)
-        return
-
-    # If date is today or unknown, click previous arrow once.
-    clicked = False
-
-    # Most reliable: use the actual Angular Material icon and click its parent button.
+def _click_previous_day_arrow(page: Page) -> bool:
+    """Click the left chevron in the Syrve date control."""
     try:
         clicked = page.evaluate(
             """() => {
-                const icons = Array.from(document.querySelectorAll('mat-icon'));
+                const root = document.querySelector('resto-range-selector-input') || document;
+                const icons = Array.from(root.querySelectorAll('mat-icon'));
                 const icon = icons.find(i =>
                     (i.textContent || '').trim() === 'chevron_left' &&
                     (i.className || '').toString().includes('prev-period-icon')
@@ -102,51 +83,101 @@ def _set_previous_business_date(page: Page, settings: Settings) -> None:
                 return true;
             }"""
         )
-    except Exception as exc:
-        print(f"JS previous arrow click failed: {exc}", flush=True)
+        if clicked:
+            return True
+    except Exception:
+        pass
 
-    if not clicked:
-        for selector in [
-            "resto-range-selector-input .control.arrow.prev button",
-            ".prev-period-icon",
-            "mat-icon.prev-period-icon",
-        ]:
-            try:
-                page.locator(selector).first.click(timeout=4000, force=True)
-                clicked = True
-                break
-            except Exception:
-                continue
+    for selector in [
+        "resto-range-selector-input .control.arrow.prev button",
+        ".prev-period-icon",
+        "mat-icon.prev-period-icon",
+    ]:
+        try:
+            page.locator(selector).first.click(timeout=3000, force=True)
+            return True
+        except Exception:
+            continue
 
-    if not clicked:
-        # Coordinate fallback based on the screenshot: left chevron inside the date control.
-        # In the 1920px runner viewport this is around x=665,y=32.
-        for x, y in [(665, 32), (675, 32), (650, 32)]:
-            try:
-                page.mouse.click(x, y)
-                clicked = True
-                break
-            except Exception:
-                pass
+    # Coordinate fallback from the user's screenshot / 1920px GitHub viewport.
+    for x, y in [(665, 32), (650, 32), (675, 32)]:
+        try:
+            page.mouse.click(x, y)
+            return True
+        except Exception:
+            pass
+    return False
 
-    print(f"Previous-day arrow clicked={clicked}", flush=True)
-    page.wait_for_timeout(3000)
 
+def _set_previous_business_date(page: Page, settings: Settings) -> None:
+    """Force Syrve UI date to previous business day.
+
+    This is intentionally done after opening the report page because Syrve may reset the
+    date control when changing store/report. We first try to set the exact date in the
+    input, then fall back to the left chevron.
+    """
+    if settings.report_date_mode.lower().strip() != "yesterday":
+        return
+
+    now = datetime.now(ZoneInfo("Asia/Riyadh"))
+    today_ui = now.strftime("%d/%m/%y")
+    target_ui = (now - timedelta(days=1)).strftime("%d/%m/%y")
+    print(f"Forcing Syrve report date. target={target_ui}, today={today_ui}", flush=True)
+
+    page.wait_for_timeout(1000)
+    current = _read_syrve_date_value(page)
+    print(f"Current Syrve date value before change: {current or 'unknown'}", flush=True)
+
+    if target_ui in current:
+        print("Syrve date already equals previous business day.", flush=True)
+        return
+
+    # Try exact input assignment first. This avoids going back two days if the control is already not today.
     try:
-        after_value = page.evaluate(
-            """() => {
+        result = page.evaluate(
+            """(target) => {
                 const inputs = Array.from(document.querySelectorAll('resto-range-selector-input input, input'));
                 const visible = inputs.filter(i => {
                   const r = i.getBoundingClientRect();
                   const style = window.getComputedStyle(i);
-                  return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                  return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !i.disabled && !i.readOnly;
                 });
-                return visible.map(i => i.value || i.getAttribute('value') || '').find(v => /\d{2}\/\d{2}\/\d{2}/.test(v)) || '';
-            }"""
+                const input = visible.find(i => /\d{2}\/\d{2}\/\d{2}/.test(i.value || '')) || visible[0];
+                if (!input) return {ok:false, reason:'no_visible_input'};
+                input.focus();
+                const proto = Object.getPrototypeOf(input);
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) setter.call(input, target); else input.value = target;
+                input.dispatchEvent(new Event('input', {bubbles:true}));
+                input.dispatchEvent(new Event('change', {bubbles:true}));
+                input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true}));
+                input.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter', code:'Enter', bubbles:true}));
+                input.blur();
+                return {ok:true, value:input.value};
+            }""",
+            target_ui,
         )
-        print(f"Syrve date after previous click: {after_value or 'unknown'}", flush=True)
-    except Exception:
-        pass
+        print(f"Direct date input set result: {result}", flush=True)
+        page.wait_for_timeout(1500)
+        try:
+            page.keyboard.press("Enter")
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+    except Exception as exc:
+        print(f"Direct date input set failed: {exc}", flush=True)
+
+    after_direct = _read_syrve_date_value(page)
+    print(f"Syrve date after direct set: {after_direct or 'unknown'}", flush=True)
+    if target_ui in after_direct:
+        return
+
+    # Fallback: if the control is on today (or unknown), click previous day once.
+    clicked = _click_previous_day_arrow(page)
+    print(f"Previous-day arrow clicked={clicked}", flush=True)
+    page.wait_for_timeout(3000)
+    after_click = _read_syrve_date_value(page)
+    print(f"Syrve date after previous click: {after_click or 'unknown'}", flush=True)
 
 
 def _open_sales_by_product(page: Page, settings: Settings) -> None:
@@ -330,15 +361,18 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
         page = context.new_page()
         page.set_default_timeout(12000)
         _login_if_needed(page, settings)
-        _set_previous_business_date(page, settings)
 
         for branch_code in branch_codes:
             _select_branch(page, branch_code, branch_codes)
-            # Store selection can reset the top date selector back to today, so force previous day per branch.
-            _set_previous_business_date(page, settings)
             _open_sales_by_product(page, settings)
-            # Some report pages also re-render the date control; enforce it one more time before reading.
+            # Opening/changing reports can reset the date, so force previous business day here.
             _set_previous_business_date(page, settings)
+            # Refresh report data after changing the date.
+            try:
+                page.get_by_text("sync", exact=True).first.click(timeout=2000, force=True)
+                page.wait_for_timeout(4000)
+            except Exception:
+                pass
             text = page.locator("body").inner_text(timeout=8000)
             raw_path = output_dir / f"sales_by_product_{branch_code}.txt"
             raw_path.write_text(text, encoding="utf-8")
