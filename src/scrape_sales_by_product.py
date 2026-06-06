@@ -85,25 +85,49 @@ def _set_previous_business_date(page: Page, settings: Settings) -> None:
 
     # If date is today or unknown, click previous arrow once.
     clicked = False
-    for selector in [
-        "resto-range-selector-input .control.arrow.prev button",
-        ".prev-period-icon",
-        "mat-icon.prev-period-icon",
-    ]:
-        try:
-            page.locator(selector).first.click(timeout=4000, force=True)
-            clicked = True
-            break
-        except Exception:
-            continue
+
+    # Most reliable: use the actual Angular Material icon and click its parent button.
+    try:
+        clicked = page.evaluate(
+            """() => {
+                const icons = Array.from(document.querySelectorAll('mat-icon'));
+                const icon = icons.find(i =>
+                    (i.textContent || '').trim() === 'chevron_left' &&
+                    (i.className || '').toString().includes('prev-period-icon')
+                ) || icons.find(i => (i.textContent || '').trim() === 'chevron_left');
+                if (!icon) return false;
+                const button = icon.closest('button') || icon.parentElement;
+                if (!button) return false;
+                button.click();
+                return true;
+            }"""
+        )
+    except Exception as exc:
+        print(f"JS previous arrow click failed: {exc}", flush=True)
 
     if not clicked:
-        # Coordinate fallback based on the top date selector location.
-        try:
-            page.mouse.click(665, 32)
-            clicked = True
-        except Exception:
-            pass
+        for selector in [
+            "resto-range-selector-input .control.arrow.prev button",
+            ".prev-period-icon",
+            "mat-icon.prev-period-icon",
+        ]:
+            try:
+                page.locator(selector).first.click(timeout=4000, force=True)
+                clicked = True
+                break
+            except Exception:
+                continue
+
+    if not clicked:
+        # Coordinate fallback based on the screenshot: left chevron inside the date control.
+        # In the 1920px runner viewport this is around x=665,y=32.
+        for x, y in [(665, 32), (675, 32), (650, 32)]:
+            try:
+                page.mouse.click(x, y)
+                clicked = True
+                break
+            except Exception:
+                pass
 
     print(f"Previous-day arrow clicked={clicked}", flush=True)
     page.wait_for_timeout(3000)
@@ -310,7 +334,11 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
 
         for branch_code in branch_codes:
             _select_branch(page, branch_code, branch_codes)
+            # Store selection can reset the top date selector back to today, so force previous day per branch.
+            _set_previous_business_date(page, settings)
             _open_sales_by_product(page, settings)
+            # Some report pages also re-render the date control; enforce it one more time before reading.
+            _set_previous_business_date(page, settings)
             text = page.locator("body").inner_text(timeout=8000)
             raw_path = output_dir / f"sales_by_product_{branch_code}.txt"
             raw_path.write_text(text, encoding="utf-8")
