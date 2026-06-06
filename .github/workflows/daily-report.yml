@@ -1,9 +1,10 @@
 name: Syrve Key Metrics Report
 
 on:
-  # Daily automatic run: 10:00 AM Asia/Riyadh = 07:00 UTC
+  # Daily automatic run around 10:07 AM Asia/Riyadh = 07:07 UTC
+  # 07:07 is used instead of exactly 07:00 to avoid GitHub schedule congestion at the top of the hour.
   schedule:
-    - cron: "0 7 * * *"
+    - cron: "7 7 * * *"
   # Manual run is still available from Actions -> Syrve Key Metrics Report -> Run workflow.
   workflow_dispatch:
 
