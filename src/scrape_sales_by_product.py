@@ -24,6 +24,9 @@ class BranchSales:
     avg_revenue_per_guest: str = ""
     cost: str = ""
     refund_amount: str = ""
+    comparison_net_sales: str = ""
+    net_sales_change_pct: str = ""
+    sales_trend: str = ""
     raw_text_file: str = ""
 
 
@@ -42,6 +45,29 @@ def _target_date(settings: Settings) -> str:
         d -= timedelta(days=1)
     return d.strftime("%Y-%m-%d")
 
+
+
+def _money_to_float(value: str) -> float:
+    try:
+        return float((value or "0").replace(",", ""))
+    except Exception:
+        return 0.0
+
+
+def _analyze_change(current: str, previous: str) -> tuple[str, str]:
+    current_value = _money_to_float(current)
+    previous_value = _money_to_float(previous)
+    if previous_value <= 0:
+        return "", "No comparison available"
+    pct = ((current_value - previous_value) / previous_value) * 100
+    pct_text = f"{pct:+.2f}%"
+    if pct < 0:
+        trend = f"Net sales decreased by {abs(pct):.2f}% vs previous day"
+    elif pct > 0:
+        trend = f"Net sales increased by {pct:.2f}% vs previous day"
+    else:
+        trend = "Net sales were unchanged vs previous day"
+    return pct_text, trend
 
 def _read_syrve_date_value(page: Page) -> str:
     """Read the visible Syrve date input value, e.g. 06/06/26."""
@@ -179,6 +205,65 @@ def _set_previous_business_date(page: Page, settings: Settings) -> None:
     after_click = _read_syrve_date_value(page)
     print(f"Syrve date after previous click: {after_click or 'unknown'}", flush=True)
 
+
+
+def _set_specific_report_date(page: Page, target_dt: datetime, label: str = "target") -> None:
+    """Force Syrve date input to a specific date."""
+    target_ui = target_dt.strftime("%d/%m/%y")
+    print(f"Setting Syrve date for {label}: {target_ui}", flush=True)
+    page.wait_for_timeout(800)
+    current = _read_syrve_date_value(page)
+    print(f"Current Syrve date before {label} set: {current or 'unknown'}", flush=True)
+    if target_ui in current:
+        print(f"Syrve date already equals {target_ui}", flush=True)
+        return
+
+    try:
+        result = page.evaluate(
+            """(target) => {
+                const inputs = Array.from(document.querySelectorAll('resto-range-selector-input input, input'));
+                const visible = inputs.filter(i => {
+                  const r = i.getBoundingClientRect();
+                  const style = window.getComputedStyle(i);
+                  return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !i.disabled && !i.readOnly;
+                });
+                const input = visible.find(i => /\d{2}\/\d{2}\/\d{2}/.test(i.value || '')) || visible[0];
+                if (!input) return {ok:false, reason:'no_visible_input'};
+                input.focus();
+                const proto = Object.getPrototypeOf(input);
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) setter.call(input, target); else input.value = target;
+                input.dispatchEvent(new Event('input', {bubbles:true}));
+                input.dispatchEvent(new Event('change', {bubbles:true}));
+                input.blur();
+                return {ok:true, value:input.value};
+            }""",
+            target_ui,
+        )
+        print(f"Direct date set result for {label}: {result}", flush=True)
+        page.wait_for_timeout(1200)
+        try:
+            page.keyboard.press("Enter")
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+    except Exception as exc:
+        print(f"Direct date set failed for {label}: {exc}", flush=True)
+
+    after = _read_syrve_date_value(page)
+    print(f"Syrve date after {label} direct set: {after or 'unknown'}", flush=True)
+    if target_ui in after:
+        return
+
+    # Fallback: click previous arrow up to 3 times until target appears.
+    for i in range(3):
+        if _read_syrve_date_value(page) == target_ui:
+            return
+        clicked = _click_previous_day_arrow(page)
+        print(f"Fallback previous click {i+1} for {label}: {clicked}", flush=True)
+        page.wait_for_timeout(2000)
+        if target_ui in _read_syrve_date_value(page):
+            return
 
 def _open_sales_by_product(page: Page, settings: Settings) -> None:
     print("Opening Reports 2.0 -> Sales by Product...", flush=True)
@@ -326,6 +411,8 @@ def _format_plain_text(report_date: str, metrics: list[BranchSales], products: l
             f"Name: {branch_title}",
             f"Gross Sales After Discount: {m.gross_sales_after_discount or '-'} SAR",
             f"Net Sales: {m.net_sales or '-'} SAR",
+            f"Previous Day Net Sales: {m.comparison_net_sales or '-'} SAR",
+            f"Sales Analysis: {m.sales_trend or '-'}",
             f"VAT Amount: {m.vat_amount or '-'} SAR",
             f"Discount Amount: {m.discount_amount or '-'} SAR",
             f"Average Order Amount: {m.avg_order_amount or '-'} SAR",
@@ -380,9 +467,26 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
             summary = _parse_branch_summary(text, branch_code, raw_path)
             if not summary.gross_sales_after_discount:
                 raise RuntimeError(f"Could not extract Sales by Product totals for {branch_code}. Check artifact screenshot/text.")
+
+            # Comparison: previous business day vs the day before it.
+            target_dt = datetime.now(ZoneInfo("Asia/Riyadh")) - timedelta(days=1)
+            comparison_dt = target_dt - timedelta(days=1)
+            _set_specific_report_date(page, comparison_dt, label=f"comparison for {branch_code}")
+            try:
+                page.get_by_text("sync", exact=True).first.click(timeout=2000, force=True)
+                page.wait_for_timeout(3500)
+            except Exception:
+                pass
+            comparison_text = page.locator("body").inner_text(timeout=8000)
+            comparison_path = output_dir / f"sales_by_product_{branch_code}_comparison.txt"
+            comparison_path.write_text(comparison_text, encoding="utf-8")
+            comparison_summary = _parse_branch_summary(comparison_text, branch_code, comparison_path)
+            summary.comparison_net_sales = comparison_summary.net_sales
+            summary.net_sales_change_pct, summary.sales_trend = _analyze_change(summary.net_sales, comparison_summary.net_sales)
+
             summaries.append(summary)
             products.extend(_try_expand_and_extract_products(page, branch_code))
-            print(f"{branch_code}: extracted gross={summary.gross_sales_after_discount}, net={summary.net_sales}", flush=True)
+            print(f"{branch_code}: extracted gross={summary.gross_sales_after_discount}, net={summary.net_sales}, comparison_net={summary.comparison_net_sales}, trend={summary.sales_trend}", flush=True)
 
         context.close()
         browser.close()
@@ -406,9 +510,11 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
     total_gross_sales = sum(_money_to_float(m.gross_sales_after_discount) for m in summaries)
     total_vat = sum(_money_to_float(m.vat_amount) for m in summaries)
     total_discount = sum(_money_to_float(m.discount_amount) for m in summaries)
+    total_previous_net_sales = sum(_money_to_float(m.comparison_net_sales) for m in summaries)
+    total_net_change_pct, total_net_trend = _analyze_change(f"{total_net_sales:.2f}", f"{total_previous_net_sales:.2f}")
 
     rows = "".join(
-        f"<tr><td>{m.branch_code}</td><td>{m.gross_sales_after_discount}</td><td>{m.net_sales}</td><td>{m.vat_amount}</td><td>{m.discount_amount}</td><td>{m.avg_order_amount}</td></tr>"
+        f"<tr><td>{m.branch_code}</td><td>{m.gross_sales_after_discount}</td><td>{m.net_sales}</td><td>{m.comparison_net_sales}</td><td>{m.net_sales_change_pct}</td><td>{m.sales_trend}</td><td>{m.vat_amount}</td><td>{m.discount_amount}</td><td>{m.avg_order_amount}</td></tr>"
         for m in summaries
     )
     total_row = f"""
@@ -416,6 +522,9 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
           <td>Total</td>
           <td>{total_gross_sales:,.2f}</td>
           <td>{total_net_sales:,.2f}</td>
+          <td>-</td>
+          <td>{total_net_change_pct}</td>
+          <td>{total_net_trend}</td>
           <td>{total_vat:,.2f}</td>
           <td>{total_discount:,.2f}</td>
           <td>-</td>
@@ -435,11 +544,19 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
           <div style="font-size:22px; font-weight:bold; color:#1e3a8a; margin-top:4px;">{total_gross_sales:,.2f} SAR</div>
         </div>
       </div>
+      <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:14px; padding:14px; margin: 10px 0 18px;">
+        <div style="font-size:12px; color:#c2410c; font-weight:bold; text-transform:uppercase;">Sales Analysis</div>
+        <div style="font-size:20px; font-weight:bold; color:#7c2d12; margin-top:4px;">{total_net_trend}</div>
+        <div style="font-size:12px; color:#9a3412; margin-top:4px;">Previous Day Net Sales: {total_previous_net_sales:,.2f} SAR</div>
+      </div>
       <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse">
         <tr>
           <th>Branch</th>
           <th>Gross Sales After Discount</th>
           <th>Net Sales</th>
+          <th>Previous Net Sales</th>
+          <th>Net Change %</th>
+          <th>Sales Analysis</th>
           <th>VAT</th>
           <th>Discount</th>
           <th>Average Order</th>
