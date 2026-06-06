@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import re
 import pandas as pd
 from playwright.sync_api import sync_playwright, Page
@@ -36,10 +37,92 @@ class ProductRow:
 
 
 def _target_date(settings: Settings) -> str:
-    d = datetime.now()
+    d = datetime.now(ZoneInfo("Asia/Riyadh"))
     if settings.report_date_mode.lower().strip() == "yesterday":
         d -= timedelta(days=1)
     return d.strftime("%Y-%m-%d")
+
+
+def _set_previous_business_date(page: Page, settings: Settings) -> None:
+    """Set Syrve's visible date selector to the previous business day.
+
+    The report label was already using yesterday, but the Syrve UI date was not forced in
+    the Sales by Product flow. This function clicks the previous-day arrow once only when
+    needed, before processing branches.
+    """
+    if settings.report_date_mode.lower().strip() != "yesterday":
+        return
+
+    now = datetime.now(ZoneInfo("Asia/Riyadh"))
+    today_ui = now.strftime("%d/%m/%y")
+    target_ui = (now - timedelta(days=1)).strftime("%d/%m/%y")
+    print(f"Setting report date to previous business day: target={target_ui}, today={today_ui}", flush=True)
+
+    # Wait for the date selector to exist after login.
+    page.wait_for_timeout(1500)
+
+    current_value = ""
+    try:
+        current_value = page.evaluate(
+            """() => {
+                const inputs = Array.from(document.querySelectorAll('resto-range-selector-input input, input'));
+                const visible = inputs.filter(i => {
+                  const r = i.getBoundingClientRect();
+                  const style = window.getComputedStyle(i);
+                  return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                });
+                return visible.map(i => i.value || i.getAttribute('value') || '').find(v => /\d{2}\/\d{2}\/\d{2}/.test(v)) || '';
+            }"""
+        )
+    except Exception as exc:
+        print(f"Could not read current date input: {exc}", flush=True)
+
+    print(f"Current Syrve date selector value: {current_value or 'unknown'}", flush=True)
+
+    if target_ui in current_value:
+        print("Syrve date is already set to previous business day.", flush=True)
+        return
+
+    # If date is today or unknown, click previous arrow once.
+    clicked = False
+    for selector in [
+        "resto-range-selector-input .control.arrow.prev button",
+        ".prev-period-icon",
+        "mat-icon.prev-period-icon",
+    ]:
+        try:
+            page.locator(selector).first.click(timeout=4000, force=True)
+            clicked = True
+            break
+        except Exception:
+            continue
+
+    if not clicked:
+        # Coordinate fallback based on the top date selector location.
+        try:
+            page.mouse.click(665, 32)
+            clicked = True
+        except Exception:
+            pass
+
+    print(f"Previous-day arrow clicked={clicked}", flush=True)
+    page.wait_for_timeout(3000)
+
+    try:
+        after_value = page.evaluate(
+            """() => {
+                const inputs = Array.from(document.querySelectorAll('resto-range-selector-input input, input'));
+                const visible = inputs.filter(i => {
+                  const r = i.getBoundingClientRect();
+                  const style = window.getComputedStyle(i);
+                  return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                });
+                return visible.map(i => i.value || i.getAttribute('value') || '').find(v => /\d{2}\/\d{2}\/\d{2}/.test(v)) || '';
+            }"""
+        )
+        print(f"Syrve date after previous click: {after_value or 'unknown'}", flush=True)
+    except Exception:
+        pass
 
 
 def _open_sales_by_product(page: Page, settings: Settings) -> None:
@@ -223,6 +306,7 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
         page = context.new_page()
         page.set_default_timeout(12000)
         _login_if_needed(page, settings)
+        _set_previous_business_date(page, settings)
 
         for branch_code in branch_codes:
             _select_branch(page, branch_code, branch_codes)
