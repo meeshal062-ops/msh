@@ -1,13 +1,16 @@
 name: Syrve Key Metrics Report
 
 on:
-  # Multiple attempts during the 10 AM hour in Saudi time.
-  # GitHub schedule can be delayed, so we schedule several attempts and the workflow itself
+  # Multiple attempts before and during the 10 AM hour in Saudi time.
+  # GitHub schedule can be delayed, so early attempts are allowed, but the workflow itself
   # sends only once per business day and only inside 10:00-10:59 Asia/Riyadh.
   schedule:
+    # Backup early attempts: 05:07, 06:07, 07:07, 08:07, 09:07 Riyadh = 02:07..06:07 UTC.
+    # If GitHub delays one of these into the 10 AM hour, it can send. If it runs early, it skips.
+    - cron: "7 2-6 * * *"
     # 09:55 Riyadh = 06:55 UTC. If GitHub delays it a few minutes, it can land inside 10 AM.
     - cron: "55 6 * * *"
-    # 10:05, 10:15, 10:25, 10:35, 10:45, 10:55 Riyadh = 07:05..07:55 UTC.
+    # Main 10 AM window attempts: 10:05, 10:15, 10:25, 10:35, 10:45, 10:55 Riyadh = 07:05..07:55 UTC.
     - cron: "5,15,25,35,45,55 7 * * *"
   # Manual run is still available from Actions -> Syrve Key Metrics Report -> Run workflow.
   workflow_dispatch:
