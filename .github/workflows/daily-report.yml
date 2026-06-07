@@ -1,33 +1,70 @@
 name: Syrve Key Metrics Report
 
 on:
-  # Daily automatic run around 10:07 AM Asia/Riyadh = 07:07 UTC
-  # 07:07 is used instead of exactly 07:00 to avoid GitHub schedule congestion at the top of the hour.
+  # Multiple attempts during the 10 AM hour in Saudi time.
+  # GitHub schedule can be delayed, so we schedule several attempts and the workflow itself
+  # sends only once per business day and only inside 10:00-10:59 Asia/Riyadh.
   schedule:
-    - cron: "7 7 * * *"
+    # 09:55 Riyadh = 06:55 UTC. If GitHub delays it a few minutes, it can land inside 10 AM.
+    - cron: "55 6 * * *"
+    # 10:05, 10:15, 10:25, 10:35, 10:45, 10:55 Riyadh = 07:05..07:55 UTC.
+    - cron: "5,15,25,35,45,55 7 * * *"
   # Manual run is still available from Actions -> Syrve Key Metrics Report -> Run workflow.
   workflow_dispatch:
 
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Preflight time window and report key
+        id: preflight
+        run: |
+          RIYADH_TIME=$(TZ=Asia/Riyadh date '+%Y-%m-%d %H:%M:%S')
+          RIYADH_HOUR=$(TZ=Asia/Riyadh date '+%H')
+          REPORT_DATE=$(TZ=Asia/Riyadh date -d 'yesterday' '+%Y-%m-%d')
+          echo "Riyadh time: $RIYADH_TIME"
+          echo "Previous business date: $REPORT_DATE"
+          echo "cache_key=syrve-report-sent-$REPORT_DATE" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$RIYADH_HOUR" != "10" ]; then
+            echo "Scheduled run is outside 10:00-10:59 Asia/Riyadh. Skipping to avoid late delivery."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore daily sent marker
+        id: sent-cache
+        if: github.event_name == 'schedule' && steps.preflight.outputs.should_run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .report-sent
+          key: ${{ steps.preflight.outputs.cache_key }}
+
+      - name: Stop if today's scheduled report was already sent
+        if: github.event_name == 'schedule' && steps.sent-cache.outputs.cache-hit == 'true'
+        run: |
+          echo "Report for this business date was already sent. Skipping duplicate scheduled run."
+
       - name: Set up Python
+        if: steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
+        if: steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
       - name: Run report automation
+        if: steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
         env:
           SYRVE_URL: ${{ secrets.SYRVE_URL }}
           SYRVE_USERNAME: ${{ secrets.SYRVE_USERNAME }}
@@ -54,8 +91,21 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: python -u src/main.py
 
+      - name: Mark scheduled report as sent
+        if: success() && github.event_name == 'schedule' && steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .report-sent
+          date -u > .report-sent/sent-at.txt
+
+      - name: Save daily sent marker
+        if: success() && github.event_name == 'schedule' && steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .report-sent
+          key: ${{ steps.preflight.outputs.cache_key }}
+
       - name: Upload report artifact
-        if: always()
+        if: always() && steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: syrve-report-output
