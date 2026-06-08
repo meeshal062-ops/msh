@@ -1,24 +1,21 @@
 name: Syrve Key Metrics Report
 
 on:
-  # Multiple attempts before and during the 10 AM hour in Saudi time.
-  # GitHub schedule can be delayed, so early attempts are allowed, but the workflow itself
-  # sends only once per business day and only inside 10:00-10:59 Asia/Riyadh.
+  # Daily early starts. The job waits until 10:00 AM Asia/Riyadh before sending.
+  # This avoids GitHub schedule delays while still preventing reports before 10 AM.
   schedule:
-    # Backup early attempts: 05:07, 06:07, 07:07, 08:07, 09:07 Riyadh = 02:07..06:07 UTC.
-    # If GitHub delays one of these into the 10 AM hour, it can send. If it runs early, it skips.
-    - cron: "7 2-6 * * *"
-    # 09:55 Riyadh = 06:55 UTC. If GitHub delays it a few minutes, it can land inside 10 AM.
-    - cron: "55 6 * * *"
-    # Main 10 AM window attempts: 10:05, 10:15, 10:25, 10:35, 10:45, 10:55 Riyadh = 07:05..07:55 UTC.
-    - cron: "5,15,25,35,45,55 7 * * *"
-  # Manual run is still available from Actions -> Syrve Key Metrics Report -> Run workflow.
+    # 07:30, 08:30, 09:30 Riyadh = 04:30, 05:30, 06:30 UTC.
+    - cron: "30 4,5,6 * * *"
   workflow_dispatch:
+
+concurrency:
+  group: syrve-daily-report
+  cancel-in-progress: false
 
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 240
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,17 +25,53 @@ jobs:
         run: |
           RIYADH_TIME=$(TZ=Asia/Riyadh date '+%Y-%m-%d %H:%M:%S')
           RIYADH_HOUR=$(TZ=Asia/Riyadh date '+%H')
+          RIYADH_EPOCH=$(TZ=Asia/Riyadh date '+%s')
+          TARGET_EPOCH=$(TZ=Asia/Riyadh date -d 'today 10:00' '+%s')
+          END_EPOCH=$(TZ=Asia/Riyadh date -d 'today 11:00' '+%s')
           REPORT_DATE=$(TZ=Asia/Riyadh date -d 'yesterday' '+%Y-%m-%d')
           echo "Riyadh time: $RIYADH_TIME"
           echo "Previous business date: $REPORT_DATE"
           echo "cache_key=syrve-report-sent-$REPORT_DATE" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "$RIYADH_HOUR" != "10" ]; then
-            echo "Scheduled run is outside 10:00-10:59 Asia/Riyadh. Skipping to avoid late delivery."
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          else
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run: running immediately."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "sleep_seconds=0" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          if [ "$RIYADH_EPOCH" -lt "$TARGET_EPOCH" ]; then
+            SLEEP_SECONDS=$((TARGET_EPOCH - RIYADH_EPOCH))
+            echo "Scheduled run started before 10 AM Riyadh. It will wait $SLEEP_SECONDS seconds until 10:00."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "sleep_seconds=$SLEEP_SECONDS" >> "$GITHUB_OUTPUT"
+          elif [ "$RIYADH_EPOCH" -lt "$END_EPOCH" ]; then
+            echo "Scheduled run started inside 10:00-10:59 Riyadh. Running now."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "sleep_seconds=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "Scheduled run started after 10:59 Riyadh. Skipping to avoid late delivery."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "sleep_seconds=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wait until 10 AM Riyadh if started early
+        if: github.event_name == 'schedule' && steps.preflight.outputs.should_run == 'true' && steps.preflight.outputs.sleep_seconds != '0'
+        run: |
+          remaining=${{ steps.preflight.outputs.sleep_seconds }}
+          echo "Waiting until 10:00 AM Asia/Riyadh. Initial remaining seconds: $remaining"
+          while [ "$remaining" -gt 0 ]; do
+            now=$(TZ=Asia/Riyadh date '+%Y-%m-%d %H:%M:%S')
+            echo "Still waiting... Riyadh time: $now, remaining: $remaining seconds"
+            if [ "$remaining" -gt 300 ]; then
+              sleep 300
+              remaining=$((remaining - 300))
+            else
+              sleep "$remaining"
+              remaining=0
+            fi
+          done
+          echo "Reached 10 AM Riyadh window. Continuing."
 
       - name: Restore daily sent marker
         id: sent-cache
