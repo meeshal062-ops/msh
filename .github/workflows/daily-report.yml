@@ -1,11 +1,12 @@
 name: Syrve Key Metrics Report
 
 on:
-  # Daily early starts. The job waits until 10:00 AM Asia/Riyadh before sending.
-  # This avoids GitHub schedule delays while still preventing reports before 10 AM.
+  # High-frequency gated schedule for reliable 10 AM Saudi delivery.
+  # GitHub may skip/delay individual cron events, so we create many chances.
+  # The workflow itself sends only once per business day and only in 10:00-10:59 Asia/Riyadh.
   schedule:
-    # 07:30, 08:30, 09:30 Riyadh = 04:30, 05:30, 06:30 UTC.
-    - cron: "30 4,5,6 * * *"
+    # Every 5 minutes from 09:00 to 10:55 Riyadh = 06:00 to 07:55 UTC.
+    - cron: "*/5 6,7 * * *"
   workflow_dispatch:
 
 concurrency:

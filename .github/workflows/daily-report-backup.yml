@@ -1,11 +1,10 @@
 name: Syrve Sales Report Backup Schedule
 
 on:
-  # Backup schedule inside the 10 AM Saudi time window.
-  # This is separate from the main workflow because GitHub occasionally skips scheduled workflows.
+  # Backup high-frequency gated schedule. Same time gate and same dedupe marker as the main workflow.
   schedule:
-    # 10:02, 10:22, 10:42, 10:57 Riyadh = 07:02, 07:22, 07:42, 07:57 UTC.
-    - cron: "2,22,42,57 7 * * *"
+    # Every 5 minutes from 09:00 to 10:55 Riyadh = 06:00 to 07:55 UTC.
+    - cron: "*/5 6,7 * * *"
   workflow_dispatch:
 
 concurrency:
