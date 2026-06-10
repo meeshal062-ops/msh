@@ -111,6 +111,7 @@ jobs:
           SYRVE_REPORT_NAME: ${{ secrets.SYRVE_REPORT_NAME }}
           BRANCH_CODES: ${{ secrets.BRANCH_CODES }}
           REPORT_DATE_MODE: ${{ secrets.REPORT_DATE_MODE }}
+          SALES_TARGET: ${{ secrets.SALES_TARGET }}
 
           WHATSAPP_ENABLED: ${{ secrets.WHATSAPP_ENABLED }}
           WATS_API_URL: ${{ secrets.WATS_API_URL }}
