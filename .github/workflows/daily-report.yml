@@ -1,12 +1,16 @@
 name: Syrve Key Metrics Report
 
 on:
-  # High-frequency gated schedule for reliable 10 AM Saudi delivery.
+  # Robust GitHub-only schedule: starts well before 10 AM and waits until 10:00 Riyadh.
   # GitHub may skip/delay individual cron events, so we create many chances.
   # The workflow itself sends only once per business day and only in 10:00-10:59 Asia/Riyadh.
   schedule:
-    # Every 5 minutes from 09:00 to 10:55 Riyadh = 06:00 to 07:55 UTC.
-    - cron: "*/5 6,7 * * *"
+    # 04:15-09:45 Riyadh every 15 minutes = 01:15-06:45 UTC.
+    - cron: "15,30,45 1-6 * * *"
+    # 09:55 Riyadh = 06:55 UTC.
+    - cron: "55 6 * * *"
+    # 10:00-10:55 Riyadh every 5 minutes = 07:00-07:55 UTC.
+    - cron: "*/5 7 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -16,7 +20,7 @@ concurrency:
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@v4
