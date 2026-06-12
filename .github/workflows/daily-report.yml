@@ -1,111 +1,32 @@
 name: Syrve Key Metrics Report
 
 on:
-  # Robust GitHub-only schedule: starts well before 10 AM and waits until 10:00 Riyadh.
-  # GitHub may skip/delay individual cron events, so we create many chances.
-  # The workflow itself sends only once per business day and only in 10:00-10:59 Asia/Riyadh.
+  # Daily automatic run: around 10:07 AM Asia/Riyadh = 07:07 UTC.
+  # GitHub may deliver the scheduled run late; late delivery is acceptable.
   schedule:
-    # 04:15-09:45 Riyadh every 15 minutes = 01:15-06:45 UTC.
-    - cron: "15,30,45 1-6 * * *"
-    # 09:55 Riyadh = 06:55 UTC.
-    - cron: "55 6 * * *"
-    # 10:00-10:55 Riyadh every 5 minutes = 07:00-07:55 UTC.
-    - cron: "*/5 7 * * *"
+    - cron: "7 7 * * *"
   workflow_dispatch:
-
-concurrency:
-  group: syrve-daily-report
-  cancel-in-progress: false
 
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Preflight time window and report key
-        id: preflight
-        run: |
-          RIYADH_TIME=$(TZ=Asia/Riyadh date '+%Y-%m-%d %H:%M:%S')
-          RIYADH_HOUR=$(TZ=Asia/Riyadh date '+%H')
-          RIYADH_EPOCH=$(TZ=Asia/Riyadh date '+%s')
-          TARGET_EPOCH=$(TZ=Asia/Riyadh date -d 'today 10:00' '+%s')
-          END_EPOCH=$(TZ=Asia/Riyadh date -d 'today 11:00' '+%s')
-          REPORT_DATE=$(TZ=Asia/Riyadh date -d 'yesterday' '+%Y-%m-%d')
-          echo "Riyadh time: $RIYADH_TIME"
-          echo "Previous business date: $REPORT_DATE"
-          echo "cache_key=syrve-report-sent-$REPORT_DATE" >> "$GITHUB_OUTPUT"
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual run: running immediately."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "sleep_seconds=0" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "$RIYADH_EPOCH" -lt "$TARGET_EPOCH" ]; then
-            SLEEP_SECONDS=$((TARGET_EPOCH - RIYADH_EPOCH))
-            echo "Scheduled run started before 10 AM Riyadh. It will wait $SLEEP_SECONDS seconds until 10:00."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "sleep_seconds=$SLEEP_SECONDS" >> "$GITHUB_OUTPUT"
-          elif [ "$RIYADH_EPOCH" -lt "$END_EPOCH" ]; then
-            echo "Scheduled run started inside 10:00-10:59 Riyadh. Running now."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "sleep_seconds=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "Scheduled run started after 10:59 Riyadh. Skipping to avoid late delivery."
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "sleep_seconds=0" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Wait until 10 AM Riyadh if started early
-        if: github.event_name == 'schedule' && steps.preflight.outputs.should_run == 'true' && steps.preflight.outputs.sleep_seconds != '0'
-        run: |
-          remaining=${{ steps.preflight.outputs.sleep_seconds }}
-          echo "Waiting until 10:00 AM Asia/Riyadh. Initial remaining seconds: $remaining"
-          while [ "$remaining" -gt 0 ]; do
-            now=$(TZ=Asia/Riyadh date '+%Y-%m-%d %H:%M:%S')
-            echo "Still waiting... Riyadh time: $now, remaining: $remaining seconds"
-            if [ "$remaining" -gt 300 ]; then
-              sleep 300
-              remaining=$((remaining - 300))
-            else
-              sleep "$remaining"
-              remaining=0
-            fi
-          done
-          echo "Reached 10 AM Riyadh window. Continuing."
-
-      - name: Restore daily sent marker
-        id: sent-cache
-        if: github.event_name == 'schedule' && steps.preflight.outputs.should_run == 'true'
-        uses: actions/cache/restore@v4
-        with:
-          path: .report-sent
-          key: ${{ steps.preflight.outputs.cache_key }}
-
-      - name: Stop if today's scheduled report was already sent
-        if: github.event_name == 'schedule' && steps.sent-cache.outputs.cache-hit == 'true'
-        run: |
-          echo "Report for this business date was already sent. Skipping duplicate scheduled run."
-
       - name: Set up Python
-        if: steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        if: steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
       - name: Run report automation
-        if: steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
         env:
           SYRVE_URL: ${{ secrets.SYRVE_URL }}
           SYRVE_USERNAME: ${{ secrets.SYRVE_USERNAME }}
@@ -133,21 +54,8 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: python -u src/main.py
 
-      - name: Mark scheduled report as sent
-        if: success() && github.event_name == 'schedule' && steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p .report-sent
-          date -u > .report-sent/sent-at.txt
-
-      - name: Save daily sent marker
-        if: success() && github.event_name == 'schedule' && steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .report-sent
-          key: ${{ steps.preflight.outputs.cache_key }}
-
       - name: Upload report artifact
-        if: always() && steps.preflight.outputs.should_run == 'true' && steps.sent-cache.outputs.cache-hit != 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: syrve-report-output
