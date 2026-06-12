@@ -299,6 +299,48 @@ def _open_sales_by_product(page: Page, settings: Settings) -> None:
     )
 
 
+
+def _refresh_sales_by_product_report(page: Page, branch_code: str, label: str = "") -> None:
+    """Click the real blue refresh button and wait for the branch row with SAR values."""
+    print(f"{branch_code}: refreshing Sales by Product report {label}...", flush=True)
+    clicked = False
+    # Try DOM: the blue button contains mat-icon sync near report header.
+    for selector in [
+        "button:has(mat-icon:has-text('sync'))",
+        "button:has-text('sync')",
+        "mat-icon:has-text('sync')",
+    ]:
+        try:
+            page.locator(selector).first.click(timeout=2500, force=True)
+            clicked = True
+            break
+        except Exception:
+            continue
+    if not clicked:
+        # Coordinate fallback from the Sales by Product screenshot: blue refresh button near top-right.
+        for x, y in [(1692, 104), (1688, 104), (1710, 104), (1865, 104)]:
+            try:
+                page.mouse.click(x, y)
+                clicked = True
+                break
+            except Exception:
+                pass
+    print(f"{branch_code}: refresh clicked={clicked} {label}", flush=True)
+
+    try:
+        page.wait_for_function(
+            """(branch) => {
+                const t = document.body.innerText || '';
+                return t.includes(branch) && t.includes('ر.س') && t.includes('Gross Sales after Discount');
+            }""",
+            branch_code,
+            timeout=45000,
+        )
+        print(f"{branch_code}: Sales by Product row with values detected {label}.", flush=True)
+    except Exception as exc:
+        print(f"{branch_code}: values not detected after refresh {label}: {exc}", flush=True)
+        page.wait_for_timeout(3000)
+
 def _parse_branch_summary(text: str, branch_code: str, raw_path: Path) -> BranchSales:
     # Example row:
     # B60 Hail, King Abdullahر.س18,706.00ر.س16,266.09ر.س2,439.91ر.س1,235.00ر.س20.33...
@@ -460,12 +502,8 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
             _open_sales_by_product(page, settings)
             # Opening/changing reports can reset the date, so force previous business day here.
             _set_previous_business_date(page, settings)
-            # Refresh report data after changing the date.
-            try:
-                page.get_by_text("sync", exact=True).first.click(timeout=2000, force=True)
-                page.wait_for_timeout(4000)
-            except Exception:
-                pass
+            # Refresh report data after changing the date and wait for values.
+            _refresh_sales_by_product_report(page, branch_code, label="target date")
             text = page.locator("body").inner_text(timeout=8000)
             raw_path = output_dir / f"sales_by_product_{branch_code}.txt"
             raw_path.write_text(text, encoding="utf-8")
@@ -478,11 +516,7 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
             target_dt = datetime.now(ZoneInfo("Asia/Riyadh")) - timedelta(days=1)
             comparison_dt = target_dt - timedelta(days=1)
             _set_specific_report_date(page, comparison_dt, label=f"comparison for {branch_code}")
-            try:
-                page.get_by_text("sync", exact=True).first.click(timeout=2000, force=True)
-                page.wait_for_timeout(3500)
-            except Exception:
-                pass
+            _refresh_sales_by_product_report(page, branch_code, label="comparison date")
             comparison_text = page.locator("body").inner_text(timeout=8000)
             comparison_path = output_dir / f"sales_by_product_{branch_code}_comparison.txt"
             comparison_path.write_text(comparison_text, encoding="utf-8")
