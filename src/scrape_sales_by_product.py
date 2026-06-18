@@ -292,11 +292,14 @@ def _open_sales_by_product(page: Page, settings: Settings) -> None:
         except Exception:
             continue
 
-    page.wait_for_function(
-        """() => (document.body.innerText || '').includes('Sales by Product') &&
-                  (document.body.innerText || '').includes('Gross Sales after Discount')""",
-        timeout=30000,
-    )
+    try:
+        page.wait_for_function(
+            """() => (document.body.innerText || '').includes('Sales by Product')""",
+            timeout=15000,
+        )
+    except Exception as exc:
+        print(f"Sales by Product page title not detected quickly; continuing to refresh step. Details: {exc}", flush=True)
+        _debug_dump(page, "sales_by_product_open_wait_warning")
 
 
 
