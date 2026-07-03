@@ -20,6 +20,8 @@ class BranchSales:
     net_sales: str = ""
     vat_amount: str = ""
     discount_amount: str = ""
+    no_of_guests: str = ""
+    orders: str = ""
     avg_order_amount: str = ""
     avg_revenue_per_guest: str = ""
     cost: str = ""
@@ -68,6 +70,32 @@ def _analyze_change(current: str, previous: str) -> tuple[str, str]:
     else:
         trend = "Net sales were unchanged vs previous day"
     return pct_text, trend
+
+
+def _split_guest_order_digits(value: str) -> tuple[str, str]:
+    """Split compressed No. of guests + Orders digits from Syrve text.
+
+    In inner_text, the grid sometimes renders No. of guests and Orders without separators,
+    e.g. "916920" means guests=916, orders=920. We split it into two near-equal parts.
+    """
+    digits = re.sub(r"\D", "", value or "")
+    if not digits:
+        return "", ""
+    if len(digits) <= 2:
+        return digits, ""
+    mid = len(digits) // 2
+    return digits[:mid], digits[mid:]
+
+
+def _calc_avg_order(net_sales: str, orders: str) -> str:
+    net = _money_to_float(net_sales)
+    try:
+        order_count = float((orders or "0").replace(',', ''))
+    except Exception:
+        order_count = 0
+    if order_count <= 0:
+        return ""
+    return f"{net / order_count:,.2f}"
 
 def _read_syrve_date_value(page: Page) -> str:
     """Read the visible Syrve date input value, e.g. 06/06/26."""
@@ -361,14 +389,34 @@ def _parse_branch_summary(text: str, branch_code: str, raw_path: Path) -> Branch
     amounts = re.findall(r"ر\.س\s*([\d,]+\.\d{2})", line)
     name = line.split("ر.س", 1)[0].strip() if line else ""
 
+    # Column order in Sales by Product:
+    # Gross Sales after Discount, Net Sales, VAT amount, Discount amount,
+    # Avg. order amount, Avg. revenue per guest, Cost, No. of guests, Orders, Refund amount.
+    no_of_guests = ""
+    orders = ""
+    if len(amounts) >= 8:
+        # Extract text between Cost amount and Refund amount; it usually contains guests+orders.
+        try:
+            cost_token = f"ر.س{amounts[6]}"
+            refund_token = f"ر.س{amounts[-1]}"
+            between = line.split(cost_token, 1)[1].split(refund_token, 1)[0]
+            no_of_guests, orders = _split_guest_order_digits(between)
+        except Exception:
+            pass
+
+    net_sales = amounts[1] if len(amounts) > 1 else ""
+    computed_avg_order = _calc_avg_order(net_sales, orders)
+
     return BranchSales(
         branch_code=branch_code,
         branch_name=name,
         gross_sales_after_discount=amounts[0] if len(amounts) > 0 else "",
-        net_sales=amounts[1] if len(amounts) > 1 else "",
+        net_sales=net_sales,
         vat_amount=amounts[2] if len(amounts) > 2 else "",
         discount_amount=amounts[3] if len(amounts) > 3 else "",
-        avg_order_amount=amounts[4] if len(amounts) > 4 else "",
+        no_of_guests=no_of_guests,
+        orders=orders,
+        avg_order_amount=computed_avg_order or (amounts[4] if len(amounts) > 4 else ""),
         avg_revenue_per_guest=amounts[5] if len(amounts) > 5 else "",
         cost=amounts[6] if len(amounts) > 6 else "",
         refund_amount=amounts[-1] if len(amounts) > 7 else "",
@@ -444,12 +492,10 @@ def _format_plain_text(report_date: str, metrics: list[BranchSales], products: l
     if total_gross or total_net:
         lines.extend([
             "Overall Summary",
-            f"Total Gross Sales After Discount: {total_gross:,.2f} SAR",
             f"Total Net Sales: {total_net:,.2f} SAR",
             f"Sales Target: {sales_target:,.2f} SAR",
             f"Target Achievement: {target_achievement:.2f}%",
             f"Target Gap: {target_gap:+,.2f} SAR",
-            f"Total VAT: {total_vat:,.2f} SAR",
             f"Total Discount: {total_discount:,.2f} SAR",
             "",
             "=" * 34,
@@ -460,13 +506,13 @@ def _format_plain_text(report_date: str, metrics: list[BranchSales], products: l
         lines.extend([
             f"Branch: {m.branch_code}",
             f"Name: {branch_title}",
-            f"Gross Sales After Discount: {m.gross_sales_after_discount or '-'} SAR",
             f"Net Sales: {m.net_sales or '-'} SAR",
             f"Previous Day Net Sales: {m.comparison_net_sales or '-'} SAR",
             f"Sales Analysis: {m.sales_trend or '-'}",
-            f"VAT Amount: {m.vat_amount or '-'} SAR",
+            f"No. of Guests: {m.no_of_guests or '-'}",
+            f"Orders: {m.orders or '-'}",
+            f"Average Order Amount (Net Sales / Orders): {m.avg_order_amount or '-'} SAR",
             f"Discount Amount: {m.discount_amount or '-'} SAR",
-            f"Average Order Amount: {m.avg_order_amount or '-'} SAR",
             f"Average Revenue per Guest: {m.avg_revenue_per_guest or '-'} SAR",
             f"Cost: {m.cost or '-'} SAR",
         ])
@@ -593,20 +639,20 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
     )
 
     rows = "".join(
-        f"<tr style='background:{'#f0fdf4' if _pct_float(m.net_sales_change_pct) >= 0 else '#fff1f2'};'><td><b>{m.branch_code}</b></td><td>{m.gross_sales_after_discount}</td><td><b>{m.net_sales}</b></td><td>{m.comparison_net_sales}</td><td style='color:{'#047857' if _pct_float(m.net_sales_change_pct) >= 0 else '#be123c'}; font-weight:bold;'>{m.net_sales_change_pct}</td><td>{m.sales_trend}</td><td>{m.vat_amount}</td><td>{m.discount_amount}</td><td>{m.avg_order_amount}</td></tr>"
+        f"<tr style='background:{'#f0fdf4' if _pct_float(m.net_sales_change_pct) >= 0 else '#fff1f2'};'><td><b>{m.branch_code}</b></td><td><b>{m.net_sales}</b></td><td>{m.comparison_net_sales}</td><td style='color:{'#047857' if _pct_float(m.net_sales_change_pct) >= 0 else '#be123c'}; font-weight:bold;'>{m.net_sales_change_pct}</td><td>{m.sales_trend}</td><td>{m.no_of_guests}</td><td>{m.orders}</td><td>{m.avg_order_amount}</td><td>{m.discount_amount}</td></tr>"
         for m in summaries
     )
     total_row = f"""
         <tr style="font-weight: bold; background: #ecfdf5;">
           <td>Total</td>
-          <td>{total_gross_sales:,.2f}</td>
           <td>{total_net_sales:,.2f}</td>
           <td>{total_previous_net_sales:,.2f}</td>
           <td>{total_net_change_pct}</td>
           <td>{total_net_trend}</td>
-          <td>{total_vat:,.2f}</td>
-          <td>{total_discount:,.2f}</td>
+          <td>{sum(int((m.no_of_guests or '0').replace(',', '') or 0) for m in summaries)}</td>
+          <td>{sum(int((m.orders or '0').replace(',', '') or 0) for m in summaries)}</td>
           <td>-</td>
+          <td>{total_discount:,.2f}</td>
         </tr>
     """
     html = f"""
@@ -614,16 +660,11 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
       <h2 style="margin-bottom:4px;">Sales by Product Dashboard</h2>
       <p style="margin-top:0; color:#6b7280;"><b>Business date:</b> {report_date} &nbsp; | &nbsp; Previous-business-day comparison included</p>
 
-      <div style="display:grid; grid-template-columns: 1.1fr 1.1fr 1.2fr; gap:12px; margin:18px 0;">
+      <div style="display:grid; grid-template-columns: 1.1fr 1.2fr; gap:12px; margin:18px 0;">
         <div style="background:#ecfdf5; border:1px solid #a7f3d0; border-radius:16px; padding:15px;">
           <div style="font-size:12px; color:#047857; font-weight:bold; text-transform:uppercase;">Total Net Sales</div>
           <div style="font-size:28px; font-weight:bold; color:#064e3b; margin-top:4px;">{total_net_sales:,.2f} SAR</div>
           <div style="font-size:11px; color:#047857; margin-top:2px;">Previous: {total_previous_net_sales:,.2f} SAR</div>
-        </div>
-        <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:16px; padding:15px;">
-          <div style="font-size:12px; color:#1d4ed8; font-weight:bold; text-transform:uppercase;">Gross Sales After Discount</div>
-          <div style="font-size:24px; font-weight:bold; color:#1e3a8a; margin-top:4px;">{total_gross_sales:,.2f} SAR</div>
-          <div style="font-size:11px; color:#1d4ed8; margin-top:2px;">VAT: {total_vat:,.2f} SAR</div>
         </div>
         <div style="background:{target_bg}; border:1px solid {target_border}; border-radius:16px; padding:15px;">
           <div style="font-size:12px; color:{target_color}; font-weight:bold; text-transform:uppercase;">Target Achievement</div>
@@ -648,14 +689,14 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
       <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse">
         <tr>
           <th>Branch</th>
-          <th>Gross Sales After Discount</th>
           <th>Net Sales</th>
           <th>Previous Net Sales</th>
           <th>Net Change %</th>
           <th>Sales Analysis</th>
-          <th>VAT</th>
+          <th>No. of Guests</th>
+          <th>Orders</th>
+          <th>Avg. Order (Net / Orders)</th>
           <th>Discount</th>
-          <th>Average Order</th>
         </tr>
         {rows}
         {total_row}
