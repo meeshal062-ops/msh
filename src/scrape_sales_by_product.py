@@ -41,6 +41,19 @@ class ProductRow:
     net_sales: str = ""
 
 
+BRANCH_DISPLAY_NAMES = {
+    "B26": "B26 - Buraydah Rehab",
+    "B45": "B45 - Unaizah",
+    "B60": "B60 - Hail",
+    "B105": "B105 - Buraydah Farm",
+    "B63": "B63 - Break station",
+}
+
+
+def _branch_display_name(branch_code: str, fallback: str = "") -> str:
+    return BRANCH_DISPLAY_NAMES.get(branch_code.upper().strip(), fallback or branch_code)
+
+
 def _target_date(settings: Settings) -> str:
     d = datetime.now(ZoneInfo("Asia/Riyadh"))
     if settings.report_date_mode.lower().strip() == "yesterday":
@@ -409,7 +422,7 @@ def _parse_branch_summary(text: str, branch_code: str, raw_path: Path) -> Branch
 
     return BranchSales(
         branch_code=branch_code,
-        branch_name=name,
+        branch_name=_branch_display_name(branch_code, name),
         gross_sales_after_discount=amounts[0] if len(amounts) > 0 else "",
         net_sales=net_sales,
         vat_amount=amounts[2] if len(amounts) > 2 else "",
@@ -504,8 +517,7 @@ def _format_plain_text(report_date: str, metrics: list[BranchSales], products: l
     for m in metrics:
         branch_title = m.branch_name or m.branch_code
         lines.extend([
-            f"Branch: {m.branch_code}",
-            f"Name: {branch_title}",
+            f"Branch: {branch_title}",
             f"Net Sales: {m.net_sales or '-'} SAR",
             f"Previous Day Net Sales: {m.comparison_net_sales or '-'} SAR",
             f"Sales Analysis: {m.sales_trend or '-'}",
@@ -639,7 +651,7 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
     )
 
     rows = "".join(
-        f"<tr style='background:{'#f0fdf4' if _pct_float(m.net_sales_change_pct) >= 0 else '#fff1f2'};'><td><b>{m.branch_code}</b></td><td><b>{m.net_sales}</b></td><td>{m.comparison_net_sales}</td><td style='color:{'#047857' if _pct_float(m.net_sales_change_pct) >= 0 else '#be123c'}; font-weight:bold;'>{m.net_sales_change_pct}</td><td>{m.sales_trend}</td><td>{m.no_of_guests}</td><td>{m.orders}</td><td>{m.avg_order_amount}</td><td>{m.discount_amount}</td></tr>"
+        f"<tr style='background:{'#f0fdf4' if _pct_float(m.net_sales_change_pct) >= 0 else '#fff1f2'};'><td><b>{m.branch_name or _branch_display_name(m.branch_code)}</b></td><td><b>{m.net_sales}</b></td><td>{m.comparison_net_sales}</td><td style='color:{'#047857' if _pct_float(m.net_sales_change_pct) >= 0 else '#be123c'}; font-weight:bold;'>{m.net_sales_change_pct}</td><td>{m.sales_trend}</td><td>{m.no_of_guests}</td><td>{m.orders}</td><td>{m.avg_order_amount}</td><td>{m.discount_amount}</td></tr>"
         for m in summaries
     )
     total_row = f"""
@@ -675,8 +687,8 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
       </div>
 
       <div style="display:grid; grid-template-columns: 1fr 1fr 1.4fr; gap:12px; margin: 10px 0 18px;">
-        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px;"><div style="font-size:11px; color:#64748b; font-weight:bold; text-transform:uppercase;">Best Branch</div><div style="font-size:18px; font-weight:bold; color:#0f172a;">{best_branch.branch_code if best_branch else '-'}</div><div style="font-size:12px; color:#475569;">{best_branch.net_sales if best_branch else '-'} SAR</div></div>
-        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px;"><div style="font-size:11px; color:#64748b; font-weight:bold; text-transform:uppercase;">Lowest Branch</div><div style="font-size:18px; font-weight:bold; color:#0f172a;">{lowest_branch.branch_code if lowest_branch else '-'}</div><div style="font-size:12px; color:#475569;">{lowest_branch.net_sales if lowest_branch else '-'} SAR</div></div>
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px;"><div style="font-size:11px; color:#64748b; font-weight:bold; text-transform:uppercase;">Best Branch</div><div style="font-size:18px; font-weight:bold; color:#0f172a;">{(best_branch.branch_name or _branch_display_name(best_branch.branch_code)) if best_branch else '-'}</div><div style="font-size:12px; color:#475569;">{best_branch.net_sales if best_branch else '-'} SAR</div></div>
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px;"><div style="font-size:11px; color:#64748b; font-weight:bold; text-transform:uppercase;">Lowest Branch</div><div style="font-size:18px; font-weight:bold; color:#0f172a;">{(lowest_branch.branch_name or _branch_display_name(lowest_branch.branch_code)) if lowest_branch else '-'}</div><div style="font-size:12px; color:#475569;">{lowest_branch.net_sales if lowest_branch else '-'} SAR</div></div>
         <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:14px; padding:12px;"><div style="font-size:11px; color:#c2410c; font-weight:bold; text-transform:uppercase;">Overall Sales Analysis</div><div style="font-size:16px; font-weight:bold; color:#7c2d12;">{total_net_trend}</div></div>
       </div>
 
