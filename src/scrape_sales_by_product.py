@@ -562,8 +562,38 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
     target_bg = "#ecfdf5" if target_achievement >= 100 else "#fffbeb"
     target_border = "#a7f3d0" if target_achievement >= 100 else "#fde68a"
 
+    def _pct_float(value: str) -> float:
+        try:
+            return float((value or "0").replace("%", "").replace("+", ""))
+        except Exception:
+            return 0.0
+
+    sorted_by_net = sorted(summaries, key=lambda x: _money_to_float(x.net_sales), reverse=True)
+    best_branch = sorted_by_net[0] if sorted_by_net else None
+    lowest_branch = sorted_by_net[-1] if sorted_by_net else None
+    max_net = _money_to_float(best_branch.net_sales) if best_branch else 0.0
+    target_progress = min(max(target_achievement, 0), 130)
+    progress_width = min(target_progress, 100)
+
+    branch_cards = "".join(
+        f"""
+        <div style="border:1px solid #e5e7eb; border-radius:14px; padding:12px; background:#ffffff;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-weight:bold; color:#111827;">{m.branch_code}</div>
+            <div style="font-size:11px; padding:3px 8px; border-radius:999px; background:{'#dcfce7' if _pct_float(m.net_sales_change_pct) >= 0 else '#fee2e2'}; color:{'#166534' if _pct_float(m.net_sales_change_pct) >= 0 else '#991b1b'};">{m.net_sales_change_pct or '0.00%'}</div>
+          </div>
+          <div style="font-size:18px; font-weight:bold; margin-top:6px; color:#111827;">{m.net_sales or '-'} SAR</div>
+          <div style="height:7px; background:#f3f4f6; border-radius:999px; overflow:hidden; margin-top:8px;">
+            <div style="width:{((_money_to_float(m.net_sales) / max_net) * 100) if max_net else 0:.1f}%; height:7px; background:#2563eb;"></div>
+          </div>
+          <div style="font-size:10px; color:#6b7280; margin-top:5px;">Share vs highest branch</div>
+        </div>
+        """
+        for m in sorted_by_net
+    )
+
     rows = "".join(
-        f"<tr><td>{m.branch_code}</td><td>{m.gross_sales_after_discount}</td><td>{m.net_sales}</td><td>{m.comparison_net_sales}</td><td>{m.net_sales_change_pct}</td><td>{m.sales_trend}</td><td>{m.vat_amount}</td><td>{m.discount_amount}</td><td>{m.avg_order_amount}</td></tr>"
+        f"<tr style='background:{'#f0fdf4' if _pct_float(m.net_sales_change_pct) >= 0 else '#fff1f2'};'><td><b>{m.branch_code}</b></td><td>{m.gross_sales_after_discount}</td><td><b>{m.net_sales}</b></td><td>{m.comparison_net_sales}</td><td style='color:{'#047857' if _pct_float(m.net_sales_change_pct) >= 0 else '#be123c'}; font-weight:bold;'>{m.net_sales_change_pct}</td><td>{m.sales_trend}</td><td>{m.vat_amount}</td><td>{m.discount_amount}</td><td>{m.avg_order_amount}</td></tr>"
         for m in summaries
     )
     total_row = f"""
@@ -571,7 +601,7 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
           <td>Total</td>
           <td>{total_gross_sales:,.2f}</td>
           <td>{total_net_sales:,.2f}</td>
-          <td>-</td>
+          <td>{total_previous_net_sales:,.2f}</td>
           <td>{total_net_change_pct}</td>
           <td>{total_net_trend}</td>
           <td>{total_vat:,.2f}</td>
@@ -581,28 +611,40 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
     """
     html = f"""
     <div style="font-family: Arial, sans-serif; line-height: 1.7">
-      <h2>Sales by Product Report - Previous Business Day</h2>
-      <p><b>Business date:</b> {report_date}</p>
-      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 18px 0;">
-        <div style="background:#ecfdf5; border:1px solid #a7f3d0; border-radius:14px; padding:14px;">
+      <h2 style="margin-bottom:4px;">Sales by Product Dashboard</h2>
+      <p style="margin-top:0; color:#6b7280;"><b>Business date:</b> {report_date} &nbsp; | &nbsp; Previous-business-day comparison included</p>
+
+      <div style="display:grid; grid-template-columns: 1.1fr 1.1fr 1.2fr; gap:12px; margin:18px 0;">
+        <div style="background:#ecfdf5; border:1px solid #a7f3d0; border-radius:16px; padding:15px;">
           <div style="font-size:12px; color:#047857; font-weight:bold; text-transform:uppercase;">Total Net Sales</div>
-          <div style="font-size:26px; font-weight:bold; color:#064e3b; margin-top:4px;">{total_net_sales:,.2f} SAR</div>
+          <div style="font-size:28px; font-weight:bold; color:#064e3b; margin-top:4px;">{total_net_sales:,.2f} SAR</div>
+          <div style="font-size:11px; color:#047857; margin-top:2px;">Previous: {total_previous_net_sales:,.2f} SAR</div>
         </div>
-        <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:14px; padding:14px;">
-          <div style="font-size:12px; color:#1d4ed8; font-weight:bold; text-transform:uppercase;">Total Gross Sales After Discount</div>
-          <div style="font-size:22px; font-weight:bold; color:#1e3a8a; margin-top:4px;">{total_gross_sales:,.2f} SAR</div>
+        <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:16px; padding:15px;">
+          <div style="font-size:12px; color:#1d4ed8; font-weight:bold; text-transform:uppercase;">Gross Sales After Discount</div>
+          <div style="font-size:24px; font-weight:bold; color:#1e3a8a; margin-top:4px;">{total_gross_sales:,.2f} SAR</div>
+          <div style="font-size:11px; color:#1d4ed8; margin-top:2px;">VAT: {total_vat:,.2f} SAR</div>
         </div>
-        <div style="background:{target_bg}; border:1px solid {target_border}; border-radius:14px; padding:14px;">
+        <div style="background:{target_bg}; border:1px solid {target_border}; border-radius:16px; padding:15px;">
           <div style="font-size:12px; color:{target_color}; font-weight:bold; text-transform:uppercase;">Target Achievement</div>
-          <div style="font-size:26px; font-weight:bold; color:{target_color}; margin-top:4px;">{target_achievement:.2f}%</div>
-          <div style="font-size:11px; color:#6b7280; margin-top:3px;">Target: {sales_target:,.2f} SAR | Gap: {target_gap:+,.2f} SAR</div>
+          <div style="display:flex; align-items:flex-end; gap:8px;"><div style="font-size:28px; font-weight:bold; color:{target_color};">{target_achievement:.2f}%</div><div style="font-size:11px; color:#6b7280; padding-bottom:5px;">of {sales_target:,.2f} SAR</div></div>
+          <div style="height:9px; background:#f3f4f6; border-radius:999px; overflow:hidden; margin-top:8px;"><div style="height:9px; width:{progress_width:.1f}%; background:{target_color};"></div></div>
+          <div style="font-size:11px; color:#6b7280; margin-top:4px;">Gap: {target_gap:+,.2f} SAR</div>
         </div>
       </div>
-      <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:14px; padding:14px; margin: 10px 0 18px;">
-        <div style="font-size:12px; color:#c2410c; font-weight:bold; text-transform:uppercase;">Sales Analysis</div>
-        <div style="font-size:20px; font-weight:bold; color:#7c2d12; margin-top:4px;">{total_net_trend}</div>
-        <div style="font-size:12px; color:#9a3412; margin-top:4px;">Previous Day Net Sales: {total_previous_net_sales:,.2f} SAR</div>
+
+      <div style="display:grid; grid-template-columns: 1fr 1fr 1.4fr; gap:12px; margin: 10px 0 18px;">
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px;"><div style="font-size:11px; color:#64748b; font-weight:bold; text-transform:uppercase;">Best Branch</div><div style="font-size:18px; font-weight:bold; color:#0f172a;">{best_branch.branch_code if best_branch else '-'}</div><div style="font-size:12px; color:#475569;">{best_branch.net_sales if best_branch else '-'} SAR</div></div>
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px;"><div style="font-size:11px; color:#64748b; font-weight:bold; text-transform:uppercase;">Lowest Branch</div><div style="font-size:18px; font-weight:bold; color:#0f172a;">{lowest_branch.branch_code if lowest_branch else '-'}</div><div style="font-size:12px; color:#475569;">{lowest_branch.net_sales if lowest_branch else '-'} SAR</div></div>
+        <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:14px; padding:12px;"><div style="font-size:11px; color:#c2410c; font-weight:bold; text-transform:uppercase;">Overall Sales Analysis</div><div style="font-size:16px; font-weight:bold; color:#7c2d12;">{total_net_trend}</div></div>
       </div>
+
+      <h3 style="margin-bottom:8px;">Branch Performance Snapshot</h3>
+      <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:10px; margin-bottom:18px;">
+        {branch_cards}
+      </div>
+
+      <h3 style="margin-bottom:8px;">Detailed Branch Table</h3>
       <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse">
         <tr>
           <th>Branch</th>
