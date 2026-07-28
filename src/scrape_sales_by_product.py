@@ -306,13 +306,59 @@ def _set_specific_report_date(page: Page, target_dt: datetime, label: str = "tar
         if target_ui in _read_syrve_date_value(page):
             return
 
+def _ensure_storeops_menu_visible(page: Page) -> None:
+    """Make the left Store Ops navigation visible if Syrve collapsed it after store selection."""
+    try:
+        body = page.locator("body").inner_text(timeout=2500)
+    except Exception:
+        body = ""
+    if "Routine Restaurant" in body or "Reports 2.0" in body or "Sales by Product" in body:
+        return
+
+    print("Left navigation is not visible; expanding Store Ops menu...", flush=True)
+    # Try the visible chevron_right button, then coordinate fallback at top-left.
+    for locator in [
+        page.get_by_text("chevron_right", exact=True),
+        page.locator("mat-icon:has-text('chevron_right')"),
+    ]:
+        try:
+            locator.first.click(timeout=3000, force=True)
+            page.wait_for_timeout(1500)
+            body = page.locator("body").inner_text(timeout=2500)
+            if "Routine Restaurant" in body or "Reports 2.0" in body:
+                return
+        except Exception:
+            pass
+    for x, y in [(18, 76), (24, 78), (28, 116)]:
+        try:
+            page.mouse.click(x, y)
+            page.wait_for_timeout(1500)
+            body = page.locator("body").inner_text(timeout=2500)
+            if "Routine Restaurant" in body or "Reports 2.0" in body:
+                return
+        except Exception:
+            pass
+
+
 def _open_sales_by_product(page: Page, settings: Settings) -> None:
     print("Opening Reports 2.0 -> Sales by Product...", flush=True)
+    _ensure_storeops_menu_visible(page)
+
+    # If a previous branch already left us on Sales by Product, do not fail trying to click menus.
+    try:
+        body_now = page.locator("body").inner_text(timeout=2500)
+    except Exception:
+        body_now = ""
+    if "Sales by Product" in body_now and "Gross Sales after Discount" in body_now:
+        print("Sales by Product is already open.", flush=True)
+        return
+
     try:
         _click_text_robust(page, [settings.syrve_main_menu_text, "Routine Restaurant Ope", "Routine Restaurant Operations"], timeout=6000)
         page.wait_for_timeout(1000)
     except Exception as exc:
         print(f"Main menu click skipped/failed: {exc}", flush=True)
+        _ensure_storeops_menu_visible(page)
 
     # Expand Reports 2.0, then click Sales by Product.
     try:
@@ -320,8 +366,19 @@ def _open_sales_by_product(page: Page, settings: Settings) -> None:
         page.wait_for_timeout(1200)
     except Exception as exc:
         print(f"Reports 2.0 may already be open: {exc}", flush=True)
+        _ensure_storeops_menu_visible(page)
 
-    _click_text_robust(page, ["Sales by Product"], timeout=10000)
+    try:
+        _click_text_robust(page, ["Sales by Product"], timeout=10000)
+    except Exception as exc:
+        print(f"Sales by Product menu click failed once: {exc}. Retrying after expanding menu...", flush=True)
+        _ensure_storeops_menu_visible(page)
+        try:
+            _click_text_robust(page, ["Reports 2.0"], timeout=5000)
+            page.wait_for_timeout(800)
+        except Exception:
+            pass
+        _click_text_robust(page, ["Sales by Product"], timeout=10000)
     page.wait_for_timeout(5000)
 
     # Click report refresh button if present.
