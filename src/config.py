@@ -25,7 +25,7 @@ class Settings:
     syrve_report_name: str = _get("SYRVE_REPORT_NAME", "Key Metrics")
     branch_codes: str = _get("BRANCH_CODES", "B60,B63,B45,B26,B105")
     report_date_mode: str = _get("REPORT_DATE_MODE", "yesterday")  # today or yesterday
-    sales_target: float = float(_get("SALES_TARGET", "77583") or "77583")
+    sales_target: float = float(_get("SALES_TARGET", "79841") or "79841")
 
     # Email is optional.
     # EMAIL_ENABLED=true sends email every successful run.
