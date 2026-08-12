@@ -41,7 +41,7 @@ class Settings:
 
     # WhatsApp via your custom Wats API
     whatsapp_enabled: bool = _bool("WHATSAPP_ENABLED", "true")
-    wats_api_url: str = _get("WATS_API_URL", "https://wats-enzn.onrender.com/api/v1/send")
+    wats_api_url: str = _get("WATS_API_URL", "http://wats-saas.duckdns.org/api/v1/send")
     wats_api_token: str = _get("WATS_API_TOKEN")
     wats_to: str = _get("WATS_TO")
 
