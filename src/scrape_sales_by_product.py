@@ -434,7 +434,7 @@ def _refresh_sales_by_product_report(page: Page, branch_code: str, label: str = 
                 const t = document.body.innerText || '';
                 return t.includes(branch) && t.includes('ر.س') && t.includes('Gross Sales after Discount');
             }""",
-            branch_code,
+            arg=branch_code,
             timeout=45000,
         )
         print(f"{branch_code}: Sales by Product row with values detected {label}.", flush=True)
