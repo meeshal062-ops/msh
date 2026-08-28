@@ -2,7 +2,7 @@ name: Syrve Key Metrics Report
 
 on:
   # Daily automatic attempts. Late delivery is acceptable.
-  # One workflow only to avoid duplicate queued/cancelled runs.
+  # Main workflow. Backup workflow also exists; same daily cache marker prevents duplicates.
   schedule:
     # Every 30 minutes from 10:00 AM to 8:30 PM Asia/Riyadh = 07:00 to 17:30 UTC.
     # First successful scheduled run sends the report; later attempts skip using the daily cache marker.
