@@ -1,12 +1,11 @@
 name: Syrve Sales Report Backup Schedule
 
 on:
-  # Daily automatic attempts. Late delivery is acceptable.
-  # Backup workflow. Uses same daily cache marker and concurrency group to avoid duplicates.
+  # Backup reliability mode with offset minutes.
+  # Same daily cache marker/concurrency group prevents duplicate reports.
   schedule:
-    # Backup attempts at :15 and :45 from 10:15 AM to 8:45 PM Asia/Riyadh = 07:15 to 17:45 UTC.
-    # First successful scheduled run sends the report; later attempts skip using the daily cache marker.
-    - cron: "15,45 7-17 * * *"
+    # Every 10 minutes offset by 5 minutes. Preflight skips before 10 AM Riyadh.
+    - cron: "5,15,25,35,45,55 * * * *"
   workflow_dispatch:
 
 concurrency:
