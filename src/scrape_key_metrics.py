@@ -337,12 +337,12 @@ def _apply_report_date(page: Page, settings: Settings) -> str:
     return target_date.strftime("%Y-%m-%d")
 
 def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | None = None) -> None:
-    """Select exactly one store/branch in Syrve's multi-select Store drawer.
+    """Select exactly one store/branch in Syrve's multi-select Store drawer or Modal dialog.
 
-    Syrve's store picker is not a single-select dropdown; it is a checkbox drawer.
-    If we only tick B60 while B111 is already ticked, the dashboard becomes "2 of 131"
-    and the report is aggregated/empty for our purpose. Therefore we clear known selected
-    stores first, tick the requested branch, then press CLOSE.
+    Syrve's store picker can appear as a side drawer (144+ items, CLOSE button) or a modal dialog
+    (Selected 1 of 138, Apply/Cancel buttons). If we only tick B60 while another branch is already
+    ticked, the dashboard becomes multi-store aggregated. We clear known selected stores first,
+    tick the requested branch, then press Apply / CLOSE.
     """
     if not branch_code:
         return
@@ -358,21 +358,70 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
     def search_store(code: str) -> None:
         ok = page.evaluate(
             """(code) => {
+                const dialogContainers = Array.from(document.querySelectorAll(
+                    'mat-dialog-container, [role="dialog"], resto-store-picker-dialog, resto-store-selector, .mat-drawer, .cdk-overlay-pane, .store-picker-dialog, .store-picker'
+                )).filter(c => {
+                    const r = c.getBoundingClientRect();
+                    const s = window.getComputedStyle(c);
+                    return r.width > 50 && r.height > 50 && s.display !== 'none' && s.visibility !== 'hidden';
+                });
+
                 const inputs = Array.from(document.querySelectorAll('input'));
                 const visible = inputs.filter(i => {
-                  const r = i.getBoundingClientRect();
-                  const style = window.getComputedStyle(i);
-                  return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && !i.disabled && !i.readOnly;
+                    const r = i.getBoundingClientRect();
+                    const style = window.getComputedStyle(i);
+                    return r.width > 20 && r.height > 10 && style.visibility !== 'hidden' && style.display !== 'none' && !i.disabled && !i.readOnly;
                 });
-                const input = visible[0];
-                if (!input) return {ok:false, count: inputs.length, visible: visible.length};
+
+                if (visible.length === 0) return {ok: false, count: 0, visible: 0};
+
+                const scored = visible.map(i => {
+                    let score = 0;
+                    const r = i.getBoundingClientRect();
+                    const attr = (i.placeholder + ' ' + (i.getAttribute('aria-label') || '') + ' ' + i.className + ' ' + i.id + ' ' + i.type).toLowerCase();
+
+                    for (const c of dialogContainers) {
+                        if (c.contains(i)) {
+                            score += 2000;
+                            break;
+                        }
+                    }
+
+                    if (attr.includes('search') || attr.includes('بحث') || attr.includes('filter') || attr.includes('store') || attr.includes('stores')) {
+                        score += 1000;
+                    }
+
+                    if (r.width >= 80) score += 100;
+                    if (r.y > 0 && r.y < 450) score += 50;
+
+                    return {input: i, score, rect: r, placeholder: i.placeholder, cls: i.className};
+                });
+
+                scored.sort((a, b) => b.score - a.score);
+                const input = scored[0].input;
+
                 input.focus();
-                input.value = '';
-                input.dispatchEvent(new Event('input', {bubbles:true}));
-                input.value = code;
-                input.dispatchEvent(new Event('input', {bubbles:true}));
-                input.dispatchEvent(new Event('change', {bubbles:true}));
-                return {ok:true, count: inputs.length, visible: visible.length};
+                const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                if (nativeSetter) {
+                    nativeSetter.call(input, '');
+                } else {
+                    input.value = '';
+                }
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+                input.dispatchEvent(new Event('change', {bubbles: true}));
+
+                if (code) {
+                    if (nativeSetter) {
+                        nativeSetter.call(input, code);
+                    } else {
+                        input.value = code;
+                    }
+                    input.dispatchEvent(new InputEvent('input', {bubbles: true, data: code}));
+                    input.dispatchEvent(new Event('input', {bubbles: true}));
+                    input.dispatchEvent(new Event('change', {bubbles: true}));
+                    input.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, key: 'Enter'}));
+                }
+                return {ok: true, count: inputs.length, visible: visible.length, matchedInput: input.placeholder || input.className, topScore: scored[0].score};
             }""",
             code,
         )
@@ -382,72 +431,71 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
         page.wait_for_timeout(900)
 
     def set_checkbox(code: str, desired: bool) -> dict:
-        """Set checkbox for a store row using real mouse coordinates.
-
-        In Syrve's drawer, JS click events on mat-checkbox are unreliable. The actual checkbox
-        is visually about 10-25 px from the left edge of the row. So we scroll the exact row into
-        view, compute its visible rect, then click the checkbox coordinate with page.mouse.
-        """
+        """Set checkbox for a store row using real mouse coordinates."""
         result = page.evaluate(
             """({code, desired}) => {
                 const c = String(code).toLowerCase();
-                const all = Array.from(document.querySelectorAll('div,li,section,mat-checkbox,label,span'));
+                const all = Array.from(document.querySelectorAll('div,li,section,mat-checkbox,label,span,mat-list-item,tr'));
                 let rows = all.map(e => {
-                  const text = (e.innerText || '').trim();
-                  const r = e.getBoundingClientRect();
-                  const style = window.getComputedStyle(e);
-                  const visible = r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                  return {e, text, r, area:r.width*r.height, visible};
-                }).filter(o =>
-                  o.visible && o.text.toLowerCase().includes(c) &&
-                  o.area > 100 && o.area < 150000 && o.r.height >= 18 && o.r.height <= 95
-                );
-                rows.sort((a,b) => {
-                  const as = a.text.toLowerCase().startsWith(c) ? 0 : 1;
-                  const bs = b.text.toLowerCase().startsWith(c) ? 0 : 1;
-                  if (as !== bs) return as - bs;
-                  // Prefer the wider full row, not the small text span.
-                  return b.r.width - a.r.width;
-                });
-                const row = rows[0];
-                if (!row) return {found:false, changed:false, reason:'row_not_found'};
-                row.e.scrollIntoView({block:'center', inline:'center'});
-                const rr = row.e.getBoundingClientRect();
-
-                // Find checkbox visually aligned with the row.
-                const boxes = Array.from(document.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox, .mat-mdc-checkbox'))
-                  .map(e => {
+                    const text = (e.innerText || '').trim();
                     const r = e.getBoundingClientRect();
                     const style = window.getComputedStyle(e);
-                    return {e, r, visible:r.width>0 && r.height>0 && style.display!=='none' && style.visibility!=='hidden', area:r.width*r.height};
-                  })
-                  .filter(o => o.visible && Math.abs((o.r.y + o.r.height/2) - (rr.y + rr.height/2)) < 32);
-                // Some row containers expose role=checkbox and are 400px wide. Prefer the real 28x28 checkbox.
-                boxes.sort((a,b) => {
-                  const as = (a.r.width <= 45 && a.r.height <= 45) ? 0 : 1;
-                  const bs = (b.r.width <= 45 && b.r.height <= 45) ? 0 : 1;
-                  if (as !== bs) return as - bs;
-                  if (a.area !== b.area) return a.area - b.area;
-                  return a.r.x - b.r.x;
+                    const visible = r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                    return {e, text, r, area: r.width * r.height, visible};
+                }).filter(o =>
+                    o.visible && o.text.toLowerCase().includes(c) &&
+                    o.area > 50 && o.area < 250000 && o.r.height >= 14 && o.r.height <= 120
+                );
+                rows.sort((a,b) => {
+                    const as = a.text.toLowerCase().startsWith(c) ? 0 : 1;
+                    const bs = b.text.toLowerCase().startsWith(c) ? 0 : 1;
+                    if (as !== bs) return as - bs;
+                    return b.r.width - a.r.width;
+                });
+                const row = rows[0];
+                if (!row) return {found: false, changed: false, reason: 'row_not_found'};
+                row.e.scrollIntoView({block: 'center', inline: 'center'});
+                const rr = row.e.getBoundingClientRect();
+
+                // Find checkbox visually aligned with the row or inside it.
+                const boxes = Array.from(document.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox, .mat-mdc-checkbox, mat-pseudo-checkbox, .mat-checkbox, .mdc-checkbox'))
+                    .map(e => {
+                        const r = e.getBoundingClientRect();
+                        const style = window.getComputedStyle(e);
+                        return {e, r, visible: r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden', area: r.width * r.height};
+                    })
+                    .filter(o => o.visible && (row.e.contains(o.e) || Math.abs((o.r.y + o.r.height / 2) - (rr.y + rr.height / 2)) < 32));
+
+                boxes.sort((a, b) => {
+                    const inA = row.e.contains(a.e) ? 0 : 1;
+                    const inB = row.e.contains(b.e) ? 0 : 1;
+                    if (inA !== inB) return inA - inB;
+                    const as = (a.r.width <= 45 && a.r.height <= 45) ? 0 : 1;
+                    const bs = (b.r.width <= 45 && b.r.height <= 45) ? 0 : 1;
+                    if (as !== bs) return as - bs;
+                    if (a.area !== b.area) return a.area - b.area;
+                    return a.r.x - b.r.x;
                 });
                 const box = boxes[0];
 
                 let checked = false;
                 if (box) {
-                  const e = box.e;
-                  if ('checked' in e) checked = !!e.checked;
-                  else if (e.getAttribute('aria-checked') != null) checked = e.getAttribute('aria-checked') === 'true';
-                  else checked = /checked|selected|mat-mdc-checkbox-checked|mdc-checkbox--selected/.test(String(e.className || '')) || !!e.querySelector('input:checked,.mdc-checkbox--selected,.mat-mdc-checkbox-checked');
+                    const e = box.e;
+                    if ('checked' in e) checked = !!e.checked;
+                    else if (e.getAttribute('aria-checked') != null) checked = e.getAttribute('aria-checked') === 'true';
+                    else checked = /checked|selected|mat-mdc-checkbox-checked|mdc-checkbox--selected|mat-checkbox-checked/.test(String(e.className || '')) || !!e.querySelector('input:checked,.mdc-checkbox--selected,.mat-mdc-checkbox-checked,.mat-checkbox-checked');
+                } else {
+                    checked = /checked|selected|mat-mdc-checkbox-checked|mdc-checkbox--selected/.test(String(row.e.className || '')) || !!row.e.querySelector('input:checked,.mdc-checkbox--selected,.mat-mdc-checkbox-checked');
                 }
                 return {
-                  found:true,
-                  desired,
-                  checked,
-                  needsClick: checked !== desired,
-                  text: row.text.slice(0,120),
-                  row:{x:rr.x, y:rr.y, w:rr.width, h:rr.height},
-                  box: box ? {x:box.r.x, y:box.r.y, w:box.r.width, h:box.r.height} : null,
-                  boxes: boxes.slice(0,3).map(o => ({x:o.r.x,y:o.r.y,w:o.r.width,h:o.r.height}))
+                    found: true,
+                    desired,
+                    checked,
+                    needsClick: checked !== desired,
+                    text: row.text.slice(0, 120),
+                    row: {x: rr.x, y: rr.y, w: rr.width, h: rr.height},
+                    box: box ? {x: box.r.x, y: box.r.y, w: box.r.width, h: box.r.height} : null,
+                    boxes: boxes.slice(0, 3).map(o => ({x: o.r.x, y: o.r.y, w: o.r.width, h: o.r.height}))
                 };
             }""",
             {"code": code, "desired": desired},
@@ -460,7 +508,7 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
                 cx = float(box["x"]) + float(box["w"]) / 2
                 cy = float(box["y"]) + float(box["h"]) / 2
             else:
-                # Drawer checkbox is at the left side of the row.
+                # Checkbox is at the left side of the row.
                 cx = float(row.get("x", 1490)) + 14
                 cy = float(row.get("y", 500)) + float(row.get("h", 44)) / 2
             print(f"{branch_code}: mouse clicking checkbox for {code} at ({cx:.1f},{cy:.1f})", flush=True)
@@ -471,19 +519,18 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
             result["changed"] = False
         return result
 
-
     try:
         print(f"{branch_code}: saving before-click debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_before_click")
 
         print(f"{branch_code}: opening location selector...", flush=True)
         opened = False
-        for selector in ["resto-store-selector .store-picker", ".store-picker", "resto-store-selector", ".store-name"]:
+        for selector in ["resto-store-selector .store-picker", ".store-picker", "resto-store-selector", ".store-name", "[data-cy='store-picker']"]:
             try:
                 page.locator(selector).first.click(timeout=4000, force=True)
                 page.wait_for_timeout(1800)
                 body_text = page.locator("body").inner_text(timeout=3000)
-                if "Store" in body_text and ("CLOSE" in body_text or "B60" in body_text or "B01" in body_text):
+                if any(k in body_text for k in ["Store", "Stores", "CLOSE", "Close", "Apply", "All", "B60", "B01", "WH005"]):
                     opened = True
                     print(f"{branch_code}: opened selector using {selector}", flush=True)
                     break
@@ -501,23 +548,65 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
         search_store(branch_code)
         selected = set_checkbox(branch_code, True)
         if not selected.get("found"):
+            # Fallback: clear search and try scrolling container
+            print(f"{branch_code}: not found after search, clearing search and retrying...", flush=True)
+            search_store("")
+            page.wait_for_timeout(800)
+            selected = set_checkbox(branch_code, True)
+
+        if not selected.get("found"):
             raise RuntimeError(f"Could not find requested branch {branch_code}")
 
         _debug_dump(page, f"branch_{branch_code}_after_checkbox")
 
-        print(f"{branch_code}: closing store selector...", flush=True)
+        print(f"{branch_code}: closing/applying store selector...", flush=True)
         closed = False
-        for locator in [page.get_by_text("CLOSE", exact=True), page.get_by_text("Close", exact=True), page.locator("button:has-text('CLOSE')")]:
+        for locator in [
+            page.get_by_role("button", name=re.compile(r"^(apply|تطبيق)$", re.I)),
+            page.get_by_role("button", name=re.compile(r"^(close|إغلاق)$", re.I)),
+            page.get_by_text("Apply", exact=True),
+            page.get_by_text("APPLY", exact=True),
+            page.get_by_text("تطبيق", exact=True),
+            page.locator("button:has-text('Apply')"),
+            page.locator("button:has-text('APPLY')"),
+            page.locator("button:has-text('تطبيق')"),
+            page.get_by_text("CLOSE", exact=True),
+            page.get_by_text("Close", exact=True),
+            page.locator("button:has-text('CLOSE')"),
+            page.locator("button:has-text('Close')"),
+            page.locator("button:has-text('إغلاق')"),
+        ]:
             try:
-                locator.first.click(timeout=4000)
-                closed = True
-                break
+                if locator.first.is_visible(timeout=1000):
+                    locator.first.click(timeout=3000, force=True)
+                    closed = True
+                    print(f"{branch_code}: closed/applied selector using locator", flush=True)
+                    break
             except Exception:
                 continue
+
+        if not closed:
+            try:
+                clicked = page.evaluate("""() => {
+                    const btns = Array.from(document.querySelectorAll('button, [role="button"], span, div'));
+                    const apply = btns.find(b => {
+                        const t = (b.innerText || '').trim().toLowerCase();
+                        const r = b.getBoundingClientRect();
+                        return (t === 'apply' || t === 'close' || t === 'تطبيق' || t === 'إغلاق') && r.width > 0 && r.height > 0;
+                    });
+                    if (apply) { apply.click(); return true; }
+                    return false;
+                }""")
+                if clicked:
+                    closed = True
+                    print(f"{branch_code}: clicked close/apply via JS eval", flush=True)
+            except Exception:
+                pass
+
         if not closed:
             # Bottom-left of drawer close button in screenshot.
             page.mouse.click(1535, 1040)
-        page.wait_for_timeout(6000)
+        page.wait_for_timeout(5000)
 
         try:
             body_after = page.locator("body").inner_text(timeout=3000)
@@ -533,6 +622,7 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
         print(f"{branch_code}: branch selection failed; saving failure debug...", flush=True)
         _debug_dump(page, f"branch_{branch_code}_failed")
         raise
+
 
 def _extract_metrics(text: str, branch_code: str, raw_text_path: Path) -> BranchMetrics:
     return BranchMetrics(

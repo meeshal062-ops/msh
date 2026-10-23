@@ -614,6 +614,10 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
         page = context.new_page()
         page.set_default_timeout(12000)
         _login_if_needed(page, settings)
+        try:
+            _open_sales_by_product(page, settings)
+        except Exception as exc:
+            print(f"Initial open sales by product warning: {exc}", flush=True)
 
         for branch_code in branch_codes:
             _select_branch(page, branch_code, branch_codes)
