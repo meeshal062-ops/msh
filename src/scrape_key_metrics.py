@@ -349,7 +349,7 @@ def _select_branch(page: Page, branch_code: str, all_branch_codes: list[str] | N
     branch_code = branch_code.upper().strip()
     all_branch_codes = [c.upper().strip() for c in (all_branch_codes or []) if c.strip()]
     clear_codes = []
-    for c in ["B111", *all_branch_codes, branch_code]:
+    for c in ["WH005", "B111", *all_branch_codes, branch_code]:
         if c and c not in clear_codes:
             clear_codes.append(c)
 

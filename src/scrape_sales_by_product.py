@@ -54,11 +54,23 @@ def _branch_display_name(branch_code: str, fallback: str = "") -> str:
     return BRANCH_DISPLAY_NAMES.get(branch_code.upper().strip(), fallback or branch_code)
 
 
+def _parse_target_dt(settings: Settings) -> datetime:
+    mode = (settings.report_date_mode or "").strip()
+    now = datetime.now(ZoneInfo("Asia/Riyadh"))
+    if mode.lower() == "today":
+        return now
+    if mode.lower() == "yesterday" or not mode:
+        return now - timedelta(days=1)
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(mode, fmt).replace(tzinfo=ZoneInfo("Asia/Riyadh"))
+        except ValueError:
+            pass
+    return now - timedelta(days=1)
+
+
 def _target_date(settings: Settings) -> str:
-    d = datetime.now(ZoneInfo("Asia/Riyadh"))
-    if settings.report_date_mode.lower().strip() == "yesterday":
-        d -= timedelta(days=1)
-    return d.strftime("%Y-%m-%d")
+    return _parse_target_dt(settings).strftime("%Y-%m-%d")
 
 
 
@@ -177,18 +189,14 @@ def _click_previous_day_arrow(page: Page) -> bool:
 
 
 def _set_previous_business_date(page: Page, settings: Settings) -> None:
-    """Force Syrve UI date to previous business day.
-
-    This is intentionally done after opening the report page because Syrve may reset the
-    date control when changing store/report. We first try to set the exact date in the
-    input, then fall back to the left chevron.
-    """
-    if settings.report_date_mode.lower().strip() != "yesterday":
+    """Force Syrve UI date to the requested business day (default yesterday)."""
+    if settings.report_date_mode.lower().strip() == "today":
         return
 
+    target_dt = _parse_target_dt(settings)
+    target_ui = target_dt.strftime("%d/%m/%y")
     now = datetime.now(ZoneInfo("Asia/Riyadh"))
     today_ui = now.strftime("%d/%m/%y")
-    target_ui = (now - timedelta(days=1)).strftime("%d/%m/%y")
     print(f"Forcing Syrve report date. target={target_ui}, today={today_ui}", flush=True)
 
     page.wait_for_timeout(1000)
@@ -196,10 +204,10 @@ def _set_previous_business_date(page: Page, settings: Settings) -> None:
     print(f"Current Syrve date value before change: {current or 'unknown'}", flush=True)
 
     if target_ui in current:
-        print("Syrve date already equals previous business day.", flush=True)
+        print(f"Syrve date already equals target ({target_ui}).", flush=True)
         return
 
-    # Try exact input assignment first. This avoids going back two days if the control is already not today.
+    # Try exact input assignment first.
     try:
         result = page.evaluate(
             """(target) => {
@@ -239,12 +247,13 @@ def _set_previous_business_date(page: Page, settings: Settings) -> None:
     if target_ui in after_direct:
         return
 
-    # Fallback: if the control is on today (or unknown), click previous day once.
-    clicked = _click_previous_day_arrow(page)
-    print(f"Previous-day arrow clicked={clicked}", flush=True)
-    page.wait_for_timeout(3000)
-    after_click = _read_syrve_date_value(page)
-    print(f"Syrve date after previous click: {after_click or 'unknown'}", flush=True)
+    # Fallback if direct input wasn't reflected
+    if settings.report_date_mode.lower().strip() in {"", "yesterday"}:
+        clicked = _click_previous_day_arrow(page)
+        print(f"Previous-day arrow clicked={clicked}", flush=True)
+        page.wait_for_timeout(3000)
+        after_click = _read_syrve_date_value(page)
+        print(f"Syrve date after previous click: {after_click or 'unknown'}", flush=True)
 
 
 
@@ -634,8 +643,8 @@ def scrape_sales_by_product(settings: Settings, output_dir: Path) -> tuple[Path,
             if not summary.gross_sales_after_discount:
                 raise RuntimeError(f"Could not extract Sales by Product totals for {branch_code}. Check artifact screenshot/text.")
 
-            # Comparison: previous business day vs the day before it.
-            target_dt = datetime.now(ZoneInfo("Asia/Riyadh")) - timedelta(days=1)
+            # Comparison: target date vs the day before it.
+            target_dt = _parse_target_dt(settings)
             comparison_dt = target_dt - timedelta(days=1)
             _set_specific_report_date(page, comparison_dt, label=f"comparison for {branch_code}")
             _refresh_sales_by_product_report(page, branch_code, label="comparison date")

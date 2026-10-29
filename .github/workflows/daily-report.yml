@@ -7,6 +7,11 @@ on:
     # Every 10 minutes, 24/7. Preflight skips before 10 AM Riyadh; daily cache prevents duplicates.
     - cron: "*/10 * * * *"
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: 'Specific report date (YYYY-MM-DD) or "yesterday"'
+        required: false
+        default: 'yesterday'
 
 concurrency:
   group: syrve-daily-report
@@ -73,7 +78,7 @@ jobs:
           SYRVE_REPORTS_SECTION_TEXT: ${{ secrets.SYRVE_REPORTS_SECTION_TEXT }}
           SYRVE_REPORT_NAME: ${{ secrets.SYRVE_REPORT_NAME }}
           BRANCH_CODES: ${{ secrets.BRANCH_CODES }}
-          REPORT_DATE_MODE: ${{ secrets.REPORT_DATE_MODE }}
+          REPORT_DATE_MODE: ${{ github.event.inputs.target_date || secrets.REPORT_DATE_MODE || 'yesterday' }}
           SALES_TARGET: ${{ secrets.SALES_TARGET }}
 
           WHATSAPP_ENABLED: ${{ secrets.WHATSAPP_ENABLED }}
