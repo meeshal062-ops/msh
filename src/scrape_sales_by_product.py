@@ -123,29 +123,31 @@ def _calc_avg_order(net_sales: str, orders: str) -> str:
     return f"{net / order_count:,.2f}"
 
 def _read_syrve_date_value(page: Page) -> str:
-    """Read the visible Syrve date input value, e.g. 06/06/26."""
+    """Read visible date from Syrve input or Period header, e.g. '28/10/26'."""
     try:
-        return page.evaluate(
+        val = page.evaluate(
             """() => {
+                // 1. Check input elements
                 const inputs = Array.from(document.querySelectorAll('resto-range-selector-input input, input'));
-                const visible = inputs.filter(i => {
-                  const r = i.getBoundingClientRect();
-                  const style = window.getComputedStyle(i);
-                  return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-                });
-                for (const i of visible) {
-                  const v = i.value || i.getAttribute('value') || '';
-                  if (/\d{2}\/\d{2}\/\d{2}/.test(v)) return v;
+                for (const i of inputs) {
+                    const v = i.value || i.getAttribute('value') || '';
+                    const m = v.match(/(\d{2}\/\d{2}\/\d{2})/);
+                    if (m) return m[1];
                 }
+                // 2. Check header or body text
+                const text = document.body.innerText || '';
+                const matchPeriod = text.match(/Period:\s*(\d{2}\/\d{2}\/\d{2})/i) || text.match(/(\d{2}\/\d{2}\/\d{2})/);
+                if (matchPeriod) return matchPeriod[1];
                 return '';
             }"""
-        ) or ""
+        )
+        return val or ""
     except Exception:
         return ""
 
 
 def _click_previous_day_arrow(page: Page) -> bool:
-    """Click the left chevron in the Syrve date control."""
+    """Click the left chevron (previous day) in the Syrve date control."""
     try:
         clicked = page.evaluate(
             """() => {
@@ -173,12 +175,12 @@ def _click_previous_day_arrow(page: Page) -> bool:
         "mat-icon.prev-period-icon",
     ]:
         try:
-            page.locator(selector).first.click(timeout=3000, force=True)
+            page.locator(selector).first.click(timeout=2000, force=True)
             return True
         except Exception:
             continue
 
-    # Coordinate fallback from the user's screenshot / 1920px GitHub viewport.
+    # Coordinate fallback
     for x, y in [(665, 32), (650, 32), (675, 32)]:
         try:
             page.mouse.click(x, y)
@@ -188,132 +190,91 @@ def _click_previous_day_arrow(page: Page) -> bool:
     return False
 
 
-def _set_previous_business_date(page: Page, settings: Settings) -> None:
-    """Force Syrve UI date to the requested business day (default yesterday)."""
-    if settings.report_date_mode.lower().strip() == "today":
-        return
-
-    target_dt = _parse_target_dt(settings)
-    target_ui = target_dt.strftime("%d/%m/%y")
-    now = datetime.now(ZoneInfo("Asia/Riyadh"))
-    today_ui = now.strftime("%d/%m/%y")
-    print(f"Forcing Syrve report date. target={target_ui}, today={today_ui}", flush=True)
-
-    page.wait_for_timeout(1000)
-    current = _read_syrve_date_value(page)
-    print(f"Current Syrve date value before change: {current or 'unknown'}", flush=True)
-
-    if target_ui in current:
-        print(f"Syrve date already equals target ({target_ui}).", flush=True)
-        return
-
-    # Try exact input assignment first.
+def _click_next_day_arrow(page: Page) -> bool:
+    """Click the right chevron (next day) in the Syrve date control."""
     try:
-        result = page.evaluate(
-            """(target) => {
-                const inputs = Array.from(document.querySelectorAll('resto-range-selector-input input, input'));
-                const visible = inputs.filter(i => {
-                  const r = i.getBoundingClientRect();
-                  const style = window.getComputedStyle(i);
-                  return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !i.disabled && !i.readOnly;
-                });
-                const input = visible.find(i => /\d{2}\/\d{2}\/\d{2}/.test(i.value || '')) || visible[0];
-                if (!input) return {ok:false, reason:'no_visible_input'};
-                input.focus();
-                const proto = Object.getPrototypeOf(input);
-                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                if (setter) setter.call(input, target); else input.value = target;
-                input.dispatchEvent(new Event('input', {bubbles:true}));
-                input.dispatchEvent(new Event('change', {bubbles:true}));
-                input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true}));
-                input.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter', code:'Enter', bubbles:true}));
-                input.blur();
-                return {ok:true, value:input.value};
-            }""",
-            target_ui,
+        clicked = page.evaluate(
+            """() => {
+                const root = document.querySelector('resto-range-selector-input') || document;
+                const icons = Array.from(root.querySelectorAll('mat-icon'));
+                const icon = icons.find(i =>
+                    (i.textContent || '').trim() === 'chevron_right' &&
+                    (i.className || '').toString().includes('next-period-icon')
+                ) || icons.find(i => (i.textContent || '').trim() === 'chevron_right' && !i.closest('.menu-toggle'));
+                if (!icon) return false;
+                const button = icon.closest('button') || icon.parentElement;
+                if (!button) return false;
+                button.click();
+                return true;
+            }"""
         )
-        print(f"Direct date input set result: {result}", flush=True)
-        page.wait_for_timeout(1500)
+        if clicked:
+            return True
+    except Exception:
+        pass
+
+    for selector in [
+        "resto-range-selector-input .control.arrow.next button",
+        ".next-period-icon",
+        "mat-icon.next-period-icon",
+    ]:
         try:
-            page.keyboard.press("Enter")
+            page.locator(selector).first.click(timeout=2000, force=True)
+            return True
+        except Exception:
+            continue
+
+    # Coordinate fallback
+    for x, y in [(795, 32), (780, 32), (810, 32)]:
+        try:
+            page.mouse.click(x, y)
+            return True
         except Exception:
             pass
-        page.wait_for_timeout(2000)
-    except Exception as exc:
-        print(f"Direct date input set failed: {exc}", flush=True)
+    return False
 
-    after_direct = _read_syrve_date_value(page)
-    print(f"Syrve date after direct set: {after_direct or 'unknown'}", flush=True)
-    if target_ui in after_direct:
+
+def _navigate_to_date(page: Page, target_dt: datetime, label: str = "") -> None:
+    """Navigate Syrve UI forward or backward until it matches target date."""
+    target_ui = target_dt.strftime("%d/%m/%y")
+    print(f"Navigating Syrve date to {target_ui} for {label}...", flush=True)
+
+    for attempt in range(8):
+        current = _read_syrve_date_value(page)
+        print(f"[{label}] Date step {attempt+1}: current={current or 'unknown'}, target={target_ui}", flush=True)
+        if current == target_ui or target_ui in current:
+            print(f"[{label}] Date matched target {target_ui} successfully.", flush=True)
+            return
+
+        diff_days = -1
+        try:
+            curr_dt = datetime.strptime(current[:8], "%d/%m/%y").replace(tzinfo=ZoneInfo("Asia/Riyadh"))
+            diff_days = (target_dt.date() - curr_dt.date()).days
+        except Exception:
+            pass
+
+        if diff_days > 0:
+            print(f"[{label}] Current {current} is before target {target_ui}. Clicking next day arrow...", flush=True)
+            _click_next_day_arrow(page)
+        else:
+            print(f"[{label}] Current {current} is after target {target_ui}. Clicking prev day arrow...", flush=True)
+            _click_previous_day_arrow(page)
+
+        page.wait_for_timeout(2500)
+
+
+def _set_previous_business_date(page: Page, settings: Settings) -> None:
+    """Force Syrve UI date to the requested target report date."""
+    if settings.report_date_mode.lower().strip() == "today":
         return
-
-    # Fallback if direct input wasn't reflected
-    if settings.report_date_mode.lower().strip() in {"", "yesterday"}:
-        clicked = _click_previous_day_arrow(page)
-        print(f"Previous-day arrow clicked={clicked}", flush=True)
-        page.wait_for_timeout(3000)
-        after_click = _read_syrve_date_value(page)
-        print(f"Syrve date after previous click: {after_click or 'unknown'}", flush=True)
-
+    target_dt = _parse_target_dt(settings)
+    _navigate_to_date(page, target_dt, label="target report date")
 
 
 def _set_specific_report_date(page: Page, target_dt: datetime, label: str = "target") -> None:
-    """Force Syrve date input to a specific date."""
-    target_ui = target_dt.strftime("%d/%m/%y")
-    print(f"Setting Syrve date for {label}: {target_ui}", flush=True)
-    page.wait_for_timeout(800)
-    current = _read_syrve_date_value(page)
-    print(f"Current Syrve date before {label} set: {current or 'unknown'}", flush=True)
-    if target_ui in current:
-        print(f"Syrve date already equals {target_ui}", flush=True)
-        return
+    """Force Syrve UI date to a specific date for comparison."""
+    _navigate_to_date(page, target_dt, label=label)
 
-    try:
-        result = page.evaluate(
-            """(target) => {
-                const inputs = Array.from(document.querySelectorAll('resto-range-selector-input input, input'));
-                const visible = inputs.filter(i => {
-                  const r = i.getBoundingClientRect();
-                  const style = window.getComputedStyle(i);
-                  return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !i.disabled && !i.readOnly;
-                });
-                const input = visible.find(i => /\d{2}\/\d{2}\/\d{2}/.test(i.value || '')) || visible[0];
-                if (!input) return {ok:false, reason:'no_visible_input'};
-                input.focus();
-                const proto = Object.getPrototypeOf(input);
-                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                if (setter) setter.call(input, target); else input.value = target;
-                input.dispatchEvent(new Event('input', {bubbles:true}));
-                input.dispatchEvent(new Event('change', {bubbles:true}));
-                input.blur();
-                return {ok:true, value:input.value};
-            }""",
-            target_ui,
-        )
-        print(f"Direct date set result for {label}: {result}", flush=True)
-        page.wait_for_timeout(1200)
-        try:
-            page.keyboard.press("Enter")
-        except Exception:
-            pass
-        page.wait_for_timeout(2000)
-    except Exception as exc:
-        print(f"Direct date set failed for {label}: {exc}", flush=True)
-
-    after = _read_syrve_date_value(page)
-    print(f"Syrve date after {label} direct set: {after or 'unknown'}", flush=True)
-    if target_ui in after:
-        return
-
-    # Fallback: click previous arrow up to 3 times until target appears.
-    for i in range(3):
-        if _read_syrve_date_value(page) == target_ui:
-            return
-        clicked = _click_previous_day_arrow(page)
-        print(f"Fallback previous click {i+1} for {label}: {clicked}", flush=True)
-        page.wait_for_timeout(2000)
-        if target_ui in _read_syrve_date_value(page):
-            return
 
 def _ensure_storeops_menu_visible(page: Page) -> None:
     """Make the left Store Ops navigation visible if Syrve collapsed it after store selection."""
